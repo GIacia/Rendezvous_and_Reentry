@@ -79,10 +79,14 @@ function [X_final, dV_used, fuel_used, hist] = Phasing_Propagator(sys, X0, targe
         
         condition = true;
         while condition
-            k1 = orbit_dynamics(X_state, sys, sys.Thrust_Cont, thrust_dir);
-            k2 = orbit_dynamics(X_state + k1*dt/2, sys, sys.Thrust_Cont, thrust_dir);
-            k3 = orbit_dynamics(X_state + k2*dt/2, sys, sys.Thrust_Cont, thrust_dir);
-            k4 = orbit_dynamics(X_state + k3*dt, sys, sys.Thrust_Cont, thrust_dir);
+            % 매 dt 루프마다 한 번의 노이즈가 낀 실제 추력 계산
+            actual_thrust_step = sys.Thrust_Cont * (1 + randn * sys.noise.thrust_err);
+            
+            % 동일한 실제 추력을 RK4 4단계에 일관되게 전달
+            k1 = orbit_dynamics(X_state, sys, actual_thrust_step, thrust_dir);
+            k2 = orbit_dynamics(X_state + k1*dt/2, sys, actual_thrust_step, thrust_dir);
+            k3 = orbit_dynamics(X_state + k2*dt/2, sys, actual_thrust_step, thrust_dir);
+            k4 = orbit_dynamics(X_state + k3*dt, sys, actual_thrust_step, thrust_dir);
             X_state = X_state + (dt/6)*(k1 + 2*k2 + 2*k3 + k4);
             
             accel = sys.Thrust_Cont / X_state(7);
@@ -148,7 +152,7 @@ function [X_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, target_r)
     dV_tot = dV1_mag + dV2_mag;
 end
 
-%% --- Helper: Universal Variable Lambert Solver (변경 없음) ---
+%% --- Helper: Universal Variable Lambert Solver ---
 function [v1, v2] = solve_lambert(r1, r2, TOF, mu)
     r1_mag = norm(r1); r2_mag = norm(r2);
     cos_dnu = dot(r1, r2) / (r1_mag * r2_mag);
@@ -173,7 +177,7 @@ function [v1, v2] = solve_lambert(r1, r2, TOF, mu)
     v1 = (r2 - f*r1) / g; v2 = (g_dot*r2 - r1) / g;
 end
 
-%% --- Helper: Physics Engine (변경 없음) ---
+%% --- Helper: Physics Engine ---
 function dX = orbit_dynamics(X, sys, thrust_mag, dir)
     r = X(1:3); v = X(4:6); m = X(7);
     r_norm = norm(r); v_norm = norm(v);
@@ -183,7 +187,7 @@ function dX = orbit_dynamics(X, sys, thrust_mag, dir)
     a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1); (r(2)/r_norm)*(5*z2 - 1); (r(3)/r_norm)*(5*z2 - 3) ];
     a_thrust = [0;0;0]; dm = 0;
     if thrust_mag > 0
-        actual_thrust = thrust_mag * (1 + randn * sys.noise.thrust_err);
+        actual_thrust = thrust_mag;
         a_thrust = (v / v_norm) * dir * (actual_thrust / m);
         dm = -actual_thrust / (sys.Isp * sys.g0);
     end

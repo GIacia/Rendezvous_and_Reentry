@@ -15,9 +15,9 @@ function dX = Env_EOM(t, X, F_cmd_body, T_cmd_body, sys, is_6DOF)
     if is_6DOF
         q = X(7:10); w = X(11:13);
         
-        % 실제 추력 발생 (노이즈 포함)
-        F_actual = F_cmd_body * (1 + randn*sys.noise.thrust_err);
-        T_actual = T_cmd_body * (1 + randn*sys.noise.thrust_err);
+        % 추력 발생
+        F_actual = F_cmd_body;
+        T_actual = T_cmd_body;
         
         % Body -> ECI 변환
         C_B2I = quat2rotm_custom(q)'; 

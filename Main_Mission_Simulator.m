@@ -46,7 +46,7 @@ X_target = [sys.Re+sys.h_target; 0; 0; 0; v_t; 0];
 %% 3. Phase 2: R-bar Approach & Berthing (6-DOF Simulation)
 fprintf('\n[Phase 2] Starting 6-DOF R-bar Approach (Glideslope Controlled)...\n');
 
-% --- [수정 1] 완벽한 초기 진입 상태 세팅 (J2 보정 정밀 각속도 적용) ---
+% --- 초기 진입 상태 세팅 (J2 보정 정밀 각속도 적용) ---
 r_t = X_target(1:3); v_t = X_target(4:6);
 h_vec = cross(r_t, v_t);
 i_u = r_t/norm(r_t); k_u = h_vec/norm(h_vec); j_u = cross(k_u, i_u);
@@ -71,6 +71,10 @@ t_vec = 0:dt:T_sim;
 hist_pos = zeros(3, length(t_vec));
 hist_mass = zeros(1, length(t_vec));
 
+% 루프 진입 전, 제어 주기 설정
+dt_gnc = 1.0; % GNC 루프는 1초마다 실행
+options = odeset('RelTol', 1e-8, 'AbsTol', 1e-8); % ode45 정밀도 옵션
+
 for k = 1:length(t_vec)
     % 1. 관측 및 로깅 (Chaser와 Target이 동일한 시간 't'에 있을 때 오차 계산)
     h_vec = cross(X_target(1:3), X_target(4:6));
@@ -87,7 +91,9 @@ for k = 1:length(t_vec)
     end
     
     % 2. GNC Control Logic (동일한 시간대에서 명령 생성)
-    [F_cmd, T_cmd, mode] = GNC_Controller(X_chaser, X_target, sys);
+    [F_cmd_raw, T_cmd_raw, mode] = GNC_Controller(X_chaser, X_target, sys);
+    F_actual = F_cmd_raw * (1 + randn * sys.noise.thrust_err);
+    T_actual = T_cmd_raw * (1 + randn * sys.noise.thrust_err);
     
     % 3. Target RK4 Propagation (이제서야 t+dt로 전파)
     X_t_state = [X_target; zeros(7,1); sys.Target_Mass]; 
@@ -97,11 +103,11 @@ for k = 1:length(t_vec)
     k4_t = Env_EOM(t_vec(k)+dt, X_t_state + k3_t*dt, [0;0;0], [0;0;0], sys, false);
     X_target = X_target + (dt/6)*(k1_t(1:6) + 2*k2_t(1:6) + 2*k3_t(1:6) + k4_t(1:6));
     
-    % 4. Chaser RK4 Propagation (동시에 t+dt로 전파)
-    k1 = Env_EOM(t_vec(k), X_chaser, F_cmd, T_cmd, sys, true);
-    k2 = Env_EOM(t_vec(k)+dt/2, X_chaser + k1*dt/2, F_cmd, T_cmd, sys, true);
-    k3 = Env_EOM(t_vec(k)+dt/2, X_chaser + k2*dt/2, F_cmd, T_cmd, sys, true);
-    k4 = Env_EOM(t_vec(k)+dt, X_chaser + k3*dt, F_cmd, T_cmd, sys, true);
+    % 4. Chaser RK4 Propagation (미리 계산된 실제 추력 F_actual, T_actual 입력)
+    k1 = Env_EOM(t_vec(k), X_chaser, F_actual, T_actual, sys, true);
+    k2 = Env_EOM(t_vec(k)+dt/2, X_chaser + k1*dt/2, F_actual, T_actual, sys, true);
+    k3 = Env_EOM(t_vec(k)+dt/2, X_chaser + k2*dt/2, F_actual, T_actual, sys, true);
+    k4 = Env_EOM(t_vec(k)+dt, X_chaser + k3*dt, F_actual, T_actual, sys, true);
     X_chaser = X_chaser + (dt/6)*(k1 + 2*k2 + 2*k3 + k4);
     
     X_chaser(7:10) = X_chaser(7:10) / norm(X_chaser(7:10));
