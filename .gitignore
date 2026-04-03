@@ -1,0 +1,11 @@
+# MATLAB backup/autosave
+*.asv
+
+# Common generated folders
+slprj/
+codegen/
+resources/project/
+
+# OS/editor clutter
+.DS_Store
+Thumbs.db
