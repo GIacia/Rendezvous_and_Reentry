@@ -13,24 +13,27 @@ Budget = table('Size',[0 4], 'VariableTypes',{'string','double','double','double
 
 m_current = sys.Chaser_Mass_Init;
 
-%% 2. Phase 1: Phasing & Homing (300 km -> 495 km)
-fprintf('[Phase 1] 3-DOF 물리 시뮬레이션 시작 (J2 섭동 및 노이즈 포함)...\n');
-
-% 체이서 초기 상태 (300 km 극궤도)
+% 체이서 초기 상태 
 v_insert = sqrt(sys.mu / (sys.Re + sys.h_insert));
 X_chaser_init = [sys.Re+sys.h_insert; 0; 0;  0; v_insert; 0;  0;0;0;1;  0;0;0;  m_current];
 target_radius = sys.Re + sys.h_wait;
 
+% 타겟 위성 상태 세팅 
+v_t0 = sqrt(sys.mu / (sys.Re + sys.h_target));
+X_target = [sys.Re+sys.h_target; 0; 0; 0; v_t0; 0];
+
+%% 2. Phase 1: Phasing & Homing 
+fprintf('[Phase 1] 3-DOF 물리 시뮬레이션 시작 (J2 섭동 및 노이즈 포함)...\n');
+
 % 변수 세팅
-custom_params.N = 3; % MULTI-HOHMANN 시 호만 전이 횟수 설정
 custom_params.TOF = 10000; % LAMBERT 시 비행 시간 설정 (예: 10000초)
 
 % 타겟의 미래 위치를 임의로 지정 (LAMBERT 모드 타겟팅용)
 % 495km 고도의 특정 y축 지점을 향해 날아간다고 가정
 custom_params.target_pos = [0; sys.Re + sys.h_wait; 0]; 
 
-% 원하는 모드로 문자열만 변경하세요: "1-HOHMANN", "MULTI-HOHMANN", "LAMBERT", "CONTINUOUS" ## 300N 고추력 또는 1N 저추력 나선상승
-phasing_mode = "MULTI-HOHMANN"; 
+% 원하는 모드로 문자열만 변경하세요: "HOHMANN", "LAMBERT"
+phasing_mode = "HOHMANN"; 
 % fprintf('   선택된 기동 방식: %s\n', phasing_mode);
 
 [X_chaser, dV_p1, fuel_p1, hist_p1] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params);
@@ -38,10 +41,6 @@ m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
 fprintf('   도달 고도: %.2f km (목표: 495.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
-
-% 타겟 위성 상태 세팅 (500 km)
-v_t = sqrt(sys.mu / (sys.Re + sys.h_target));
-X_target = [sys.Re+sys.h_target; 0; 0; 0; v_t; 0];
 
 %% 3. Phase 2: R-bar Approach & Berthing (6-DOF Simulation)
 fprintf('\n[Phase 2] Starting 6-DOF R-bar Approach (Glideslope Controlled)...\n');
@@ -57,7 +56,7 @@ v_app_initial = [2.0; 0; 0]; % 초기 접근 속도(2m/s)
 
 r_c_new = r_t + C_I2L' * offset_lvlh;
 
-% J2 섭동이 포함된 Target의 정확한 ECI 각속도 도출 (단순 n_mean 사용 폐기)
+% J2 섭동이 포함된 Target의 정확한 ECI 각속도 도출
 w_lvlh_eci = h_vec / norm(r_t)^2; 
 
 v_c_new = v_t + C_I2L'*v_app_initial + cross(w_lvlh_eci, C_I2L' * offset_lvlh);
@@ -119,7 +118,7 @@ hist_mass = hist_mass(1:k);
 fprintf('\n[Phase 3] 3-DOF 재진입 시뮬레이션 시작 (J2 섭동 및 노이즈 역추진)...\n');
 
 % 고추력으로 대기권 인터페이스에 하강
-reentry_mode = "1-HOHMANN"; 
+reentry_mode = "HOHMANN"; 
 fprintf('   선택된 기동 방식: %s\n', reentry_mode);
 
 target_reentry_r = sys.Re + sys.h_reentry;

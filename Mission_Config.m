@@ -32,4 +32,9 @@ function sys = Mission_Config()
     % 제어 게인 (PD Controller)
     sys.GNC.Kp_pos = 0.05; sys.GNC.Kd_pos = 0.8;
     sys.GNC.Kp_att = 50;   sys.GNC.Kd_att = 100;
+
+    % Capture Point Settings
+    sys.capture.r_rel0 = [-5000; 0; 0];   % LVLH 기준 5 km R-bar below
+    sys.capture.v_rel0 = [0; 0; 0];       % capture point에서 정지 상대속도
+    sys.capture.TOF = 1800;               % Phase 1 종료 후 capture까지 30분
 end

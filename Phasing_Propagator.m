@@ -10,28 +10,14 @@ function [X_final, dV_used, fuel_used, hist] = Phasing_Propagator(sys, X0, targe
     hist.pos = [];
     hist.mass = [];
     
-    % --- 1. 1-HOHMANN 모드 ---
-    if mode == "1-HOHMANN"
+    % --- 1. HOHMANN 모드 ---
+    if mode == "HOHMANN"
         [X_state, dV, sub_hist] = execute_hohmann(sys, X_state, target_r);
         dV_used = dV_used + dV;
         hist.pos = [hist.pos, sub_hist.pos];
         hist.mass = [hist.mass, sub_hist.mass];
         
-    % --- 2. MULTI-HOHMANN 모드 (N번 나누어 전이) ---
-    elseif mode == "MULTI-HOHMANN"
-        N = custom_params.N; 
-        fprintf('   * %d-Step Multi-Hohmann 기동 수행 중...\n', N);
-        r_current = norm(X_state(1:3));
-        r_steps = linspace(r_current, target_r, N+1);
-        
-        for i = 2:(N+1)
-            [X_state, dV, sub_hist] = execute_hohmann(sys, X_state, r_steps(i));
-            dV_used = dV_used + dV;
-            hist.pos = [hist.pos, sub_hist.pos];
-            hist.mass = [hist.mass, sub_hist.mass];
-        end
-        
-    % --- 3. LAMBERT 모드 (특정 시간 TOF 만에 타겟팅) ---
+    % --- 2. LAMBERT 모드 (특정 시간 TOF 만에 타겟팅) ---
     elseif mode == "LAMBERT"
         TOF = custom_params.TOF; 
         target_pos = custom_params.target_pos; 
@@ -70,38 +56,6 @@ function [X_final, dV_used, fuel_used, hist] = Phasing_Propagator(sys, X0, targe
         X_state(4:6) = X_state(4:6) + dV2_vec/norm(dV2_vec) * dV2_mag;
         X_state(7) = X_state(7) - X_state(7) * (1 - exp(-dV2_mag / (sys.Isp * sys.g0)));
         dV_used = dV_used + dV2_mag;
-
-    % --- 4. CONTINUOUS 모드 (저추력 나선형 전이) ---
-    elseif mode == "CONTINUOUS"
-        is_ascending = target_r > norm(X_state(1:3));
-        thrust_dir = ifelse(is_ascending, 1, -1);
-        dt = 10;
-        
-        condition = true;
-        while condition
-            % 매 dt 루프마다 한 번의 노이즈가 낀 실제 추력 계산
-            actual_thrust_step = sys.Thrust_Cont * (1 + randn * sys.noise.thrust_err);
-            
-            % 동일한 실제 추력을 RK4 4단계에 일관되게 전달
-            k1 = orbit_dynamics(X_state, sys, actual_thrust_step, thrust_dir);
-            k2 = orbit_dynamics(X_state + k1*dt/2, sys, actual_thrust_step, thrust_dir);
-            k3 = orbit_dynamics(X_state + k2*dt/2, sys, actual_thrust_step, thrust_dir);
-            k4 = orbit_dynamics(X_state + k3*dt, sys, actual_thrust_step, thrust_dir);
-            X_state = X_state + (dt/6)*(k1 + 2*k2 + 2*k3 + k4);
-            
-            accel = sys.Thrust_Cont / X_state(7);
-            dV_used = dV_used + accel * dt;
-            
-            % 상태 기록
-            hist.pos = [hist.pos, X_state(1:3)];
-            hist.mass = [hist.mass, X_state(7)];
-            
-            if is_ascending
-                condition = norm(X_state(1:3)) < target_r;
-            else
-                condition = norm(X_state(1:3)) > target_r;
-            end
-        end
     end
     
     % 시간 배열 생성 (모든 루프의 dt는 10초로 고정되어 있음)
