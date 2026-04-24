@@ -28,6 +28,15 @@ fprintf('[Phase 1] 3-DOF 물리 시뮬레이션 시작 (J2 섭동 및 노이즈 
 % 변수 세팅
 custom_params.TOF = 10000; % LAMBERT 시 비행 시간 설정 (예: 10000초)
 
+% HOHMANN mode: wait/phase search for target-relative capture point arrival
+custom_params.max_wait = 2*86400;      % [s] search up to 2 days before departure
+custom_params.dt_scan = 60;            % [s] coarse phase-search spacing
+custom_params.refine_span = 180;       % [s] local refinement half-width
+custom_params.refine_step = 10;        % [s] local refinement spacing
+custom_params.dt_wait = 30;            % [s] waiting-orbit propagation step
+custom_params.dt_transfer = 10;        % [s] Hohmann transfer propagation step
+custom_params.capture_pos_tol = 1000;  % [m] warning threshold for capture-point error
+
 % 타겟의 미래 위치를 임의로 지정 (LAMBERT 모드 타겟팅용)
 % 495km 고도의 특정 y축 지점을 향해 날아간다고 가정
 custom_params.target_pos = [0; sys.Re + sys.h_wait; 0]; 
@@ -45,22 +54,30 @@ fprintf('   도달 고도: %.2f km (목표: 495.00 km)\n', (norm(X_chaser(1:3)) 
 %% 3. Phase 2: R-bar Approach & Berthing (6-DOF Simulation)
 fprintf('\n[Phase 2] Starting 6-DOF R-bar Approach (Glideslope Controlled)...\n');
 
-% --- 초기 진입 상태 세팅 (J2 보정 정밀 각속도 적용) ---
+% --- Phase 2 initial state handling ---
+% false: use the real propagated final state from Phase 1.
+% true : reset the chaser to the ideal R-bar 5 km point, as in the previous debug version.
+use_forced_capture = false;
+
 r_t = X_target(1:3); v_t = X_target(4:6);
 h_vec = cross(r_t, v_t);
 i_u = r_t/norm(r_t); k_u = h_vec/norm(h_vec); j_u = cross(k_u, i_u);
-C_I2L = [i_u'; j_u'; k_u']; % ECI to LVLH 변환 행렬
+C_I2L = [i_u'; j_u'; k_u']; % ECI to LVLH rotation matrix
 
-offset_lvlh = [-5000; 0; 0]; % R-bar 5km 아래 (-5000m)
-v_app_initial = [2.0; 0; 0]; % 초기 접근 속도(2m/s)
+if use_forced_capture
+    offset_lvlh = [-5000; 0; 0]; % R-bar 5 km below target
+    v_app_initial = [2.0; 0; 0]; % initial approach velocity in LVLH
 
-r_c_new = r_t + C_I2L' * offset_lvlh;
-
-% J2 섭동이 포함된 Target의 정확한 ECI 각속도 도출
-w_lvlh_eci = h_vec / norm(r_t)^2; 
-
-v_c_new = v_t + C_I2L'*v_app_initial + cross(w_lvlh_eci, C_I2L' * offset_lvlh);
-X_chaser(1:6) = [r_c_new; v_c_new]; 
+    r_c_new = r_t + C_I2L' * offset_lvlh;
+    w_lvlh_eci = h_vec / norm(r_t)^2;
+    v_c_new = v_t + C_I2L'*v_app_initial + cross(w_lvlh_eci, C_I2L' * offset_lvlh);
+    X_chaser(1:6) = [r_c_new; v_c_new];
+    fprintf('   forced capture enabled: chaser reset to R-bar 5 km point.\n');
+else
+    rel0_lvlh = C_I2L * (X_chaser(1:3) - X_target(1:3));
+    fprintf('   using propagated Phase 1 final state. Initial LVLH rel-pos = [%+.1f, %+.1f, %+.1f] m\n', ...
+            rel0_lvlh(1), rel0_lvlh(2), rel0_lvlh(3));
+end
 
 % 시뮬레이션 시간 
 dt = 1; 
