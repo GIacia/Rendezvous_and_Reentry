@@ -1,11 +1,40 @@
-# MATLAB backup/autosave
+# =========================
+# MATLAB / Simulink
+# =========================
 *.asv
+*.m~
+*.autosave
+*.slxc
+*.mex*
+*.mlappinstall
 
-# Common generated folders
+# Generated project/build folders
 slprj/
 codegen/
 resources/project/
 
-# OS/editor clutter
+# MATLAB cache / temp
+*.log
+*.tmp
+*.bak
+
+# =========================
+# OS / Editor clutter
+# =========================
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+
+# =========================
+# Optional generated outputs
+# Uncomment if you start exporting large result files
+# =========================
+# results/figures/
+# results/tables/
+# results/mat/
