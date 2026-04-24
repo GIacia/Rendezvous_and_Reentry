@@ -36,7 +36,7 @@ custom_params.target_pos = [0; sys.Re + sys.h_wait; 0];
 phasing_mode = "HOHMANN"; 
 % fprintf('   선택된 기동 방식: %s\n', phasing_mode);
 
-[X_chaser, dV_p1, fuel_p1, hist_p1] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params);
+[X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
@@ -73,6 +73,8 @@ hist_mass = zeros(1, length(t_vec));
 % 루프 진입 전, 제어 주기 설정
 dt_gnc = 1.0; % GNC 루프는 1초마다 실행
 options = odeset('RelTol', 1e-8, 'AbsTol', 1e-8); % ode45 정밀도 옵션
+mode = "R-BAR_CLOSING";  % 종료 조건에서 첫 루프부터 참조되므로 loop 전에 초기화
+
 
 for k = 1:length(t_vec)
     % 1. 관측 및 로깅 (Chaser와 Target이 동일한 시간 't'에 있을 때 오차 계산)
@@ -124,7 +126,7 @@ fprintf('   선택된 기동 방식: %s\n', reentry_mode);
 target_reentry_r = sys.Re + sys.h_reentry;
 
 % Phase 2 Berthing 직후의 X_chaser 상태를 그대로 입력하여 하강
-[X_chaser, dV_p3, fuel_p3, hist_p3] = Phasing_Propagator(sys, X_chaser, target_reentry_r, reentry_mode, custom_params);
+[X_chaser, dV_p3, fuel_p3, hist_p3, X_target] = Phasing_Propagator(sys, X_chaser, target_reentry_r, reentry_mode, custom_params, X_target);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
@@ -143,7 +145,7 @@ figure('Name','Proximity Operations','Color','w');
 plot(hist_pos(2,1:k), hist_pos(1,1:k), 'b-', 'LineWidth', 2); hold on;
 plot(0,0,'r^','MarkerSize',10,'MarkerFaceColor','r');
 grid on; xlabel('V-bar (m)'); ylabel('R-bar (m)');
-title('R-bar Forced Approach Trajectory (LVLH)');
+title('R-bar Approach Trajectory (LVLH)');
 legend('Chaser Trajectory', 'Target');
 set(gca, 'XDir', 'reverse'); % Flight direction to the left
 
