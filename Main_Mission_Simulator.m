@@ -45,7 +45,7 @@ custom_params.target_pos = [0; sys.Re + sys.h_wait; 0];
 phasing_mode = "HOHMANN"; 
 % fprintf('   선택된 기동 방식: %s\n', phasing_mode);
 
-[X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target);
+[X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, [1]);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
@@ -143,7 +143,7 @@ fprintf('   선택된 기동 방식: %s\n', reentry_mode);
 target_reentry_r = sys.Re + sys.h_reentry;
 
 % Phase 2 Berthing 직후의 X_chaser 상태를 그대로 입력하여 하강
-[X_chaser, dV_p3, fuel_p3, hist_p3, X_target] = Phasing_Propagator(sys, X_chaser, target_reentry_r, reentry_mode, custom_params, X_target);
+[X_chaser, dV_p3, fuel_p3, hist_p3, X_target] = Phasing_Propagator(sys, X_chaser, target_reentry_r, reentry_mode, custom_params, X_target, [3]);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];

@@ -1,4 +1,4 @@
-function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagator(sys, X0, target_r, mode, custom_params, X_target0)
+function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagator(sys, X0, target_r, mode, custom_params, X_target0, pmode)
     % Phasing_Propagator
     % 3-DOF impulsive phasing propagator with optional target co-propagation.
     %
@@ -29,7 +29,7 @@ function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagato
     hist = init_hist();
 
     if mode == "HOHMANN"
-        [X_state, X_target_state, dV, sub_hist] = execute_hohmann(sys, X_state, target_r, X_target_state, custom_params);
+        [X_state, X_target_state, dV, sub_hist] = execute_hohmann(sys, X_state, target_r, X_target_state, custom_params, pmode);
         dV_used = dV_used + dV;
         hist = append_hist(hist, sub_hist);
 
@@ -86,7 +86,7 @@ function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagato
 end
 
 %% --- Helper: Hohmann Transfer Execution ---
-function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, target_r, X_target_st, custom_params)
+function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, target_r, X_target_st, custom_params, pmode)
     sub_hist = init_hist();
     dV_tot = 0;
 
@@ -111,7 +111,7 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
     if ~isempty(X_target_st)
         fprintf('   * J2-aware Hohmann phase search 시작...\n');
         best_wait = find_best_wait_time(sys, X_st, X_target_st, target_r, TOF, desired_rel_lvlh, ...
-                                        dt_scan, max_wait, refine_span, refine_step, dt_transfer);
+                                        dt_scan, max_wait, refine_span, refine_step, dt_transfer, pmode);
         fprintf('     - selected wait time: %.1f s (%.2f orbits at insertion altitude)\n', ...
                 best_wait, best_wait / (2*pi*sqrt(r_current^3/sys.mu)));
 
@@ -144,17 +144,17 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
 end
 
 %% --- Helper: Find a wait time that best targets the LVLH capture point under J2 ---
-function best_wait = find_best_wait_time(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, dt_scan, max_wait, refine_span, refine_step, dt_transfer)
+function best_wait = find_best_wait_time(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, dt_scan, max_wait, refine_span, refine_step, dt_transfer, pmode)
     candidate_times = 0:dt_scan:max_wait;
-    [best_wait, ~] = scan_wait_candidates(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, candidate_times, dt_transfer);
+    [best_wait, ~] = scan_wait_candidates(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, candidate_times, dt_transfer, pmode);
 
     t1 = max(0, best_wait - refine_span);
     t2 = min(max_wait, best_wait + refine_span);
     refined_times = t1:refine_step:t2;
-    [best_wait, ~] = scan_wait_candidates(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, refined_times, dt_transfer);
+    [best_wait, ~] = scan_wait_candidates(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, refined_times, dt_transfer, pmode);
 end
 
-function [best_wait, best_metric] = scan_wait_candidates(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, candidate_times, dt_transfer)
+function [best_wait, best_metric] = scan_wait_candidates(sys, X_ch0, X_t0, target_r, TOF, desired_rel_lvlh, candidate_times, dt_transfer, pmode)
     best_wait = candidate_times(1);
     best_metric = inf;
 
@@ -169,6 +169,9 @@ function [best_wait, best_metric] = scan_wait_candidates(sys, X_ch0, X_t0, targe
             [X_ch_wait, X_t_wait] = propagate_state_only(X_ch_wait, X_t_wait, sys, dt_to_next, min(60, max(1, dt_to_next)));
         end
         t_prev = t_now;
+        if abs(acos(dot(X_ch_wait(1:3), X_t_wait(1:3))/(norm(X_ch_wait(1:3))*norm(X_t_wait(1:3)))) - sys.phase) > sys.phase && pmode == 1
+            continue
+        end
 
         [rel_lvlh, rel_vel_lvlh] = predict_hohmann_capture(sys, X_ch_wait, X_t_wait, target_r, TOF, dt_transfer);
         pos_error = norm(rel_lvlh - desired_rel_lvlh);
