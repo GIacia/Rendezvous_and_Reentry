@@ -81,7 +81,7 @@ end
 
 % 시뮬레이션 시간 
 dt = 1; 
-T_sim = 3500; 
+T_sim = 30000; 
 t_vec = 0:dt:T_sim;
 
 hist_pos = zeros(3, length(t_vec));
