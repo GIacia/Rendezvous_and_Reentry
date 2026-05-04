@@ -122,14 +122,14 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
     end
 
     % First Hohmann impulse at the numerically selected epoch.
-    [X_st, dV1] = apply_hohmann_departure_impulse(X_st, target_r, sys);
+    [X_st, dV1] = apply_hohmann_departure_impulse(X_st, target_r, X_target_st, sys, false);
     dV_tot = dV_tot + dV1;
 
     [X_st, X_target_st, transfer_hist] = propagate_for_duration(X_st, X_target_st, sys, TOF, dt_transfer, sub_hist.time_end);
     sub_hist = append_hist(sub_hist, transfer_hist);
 
     % Circularization impulse at arrival radius.
-    [X_st, dV2] = apply_circularization_impulse(X_st, sys);
+    [X_st, dV2] = apply_circularization_impulse(X_st, target_r, X_target_st, sys, false);
     dV_tot = dV_tot + dV2;
 
     if ~isempty(X_target_st)
@@ -185,34 +185,37 @@ end
 function [rel_lvlh, rel_vel_lvlh] = predict_hohmann_capture(sys, X_ch_wait, X_t_wait, target_r, TOF, dt_transfer)
     X_ch = X_ch_wait;
     X_t = X_t_wait;
-    [X_ch, ~] = apply_hohmann_departure_impulse(X_ch, target_r, sys, false);
+    [X_ch, ~] = apply_hohmann_departure_impulse(X_ch, target_r, X_t, sys, false);
     [X_ch, X_t] = propagate_state_only(X_ch, X_t, sys, TOF, dt_transfer);
-    [X_ch, ~] = apply_circularization_impulse(X_ch, sys, false);
+    [X_ch, ~] = apply_circularization_impulse(X_ch, target_r, X_t, sys, false);
     [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
 end
 
 %% --- Helper: Impulses ---
-function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, sys, use_noise)
+function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, ~, sys, use_noise)
     if nargin < 4, use_noise = true; end
     r_current = norm(X_st(1:3));
     v_current = norm(X_st(4:6));
     a_trans = (r_current + target_r) / 2;
-    v_trans1 = sqrt(sys.mu * (2/r_current - 1/a_trans));
+%    v_trans1 = sqrt(sys.mu * (2/r_current - 1/a_trans));
+    v_trans1 = sqrt(sys.mu * ( -1/a_trans + 2/r_current - sys.J2 * sys.Re^2 / r_current^3 * (3 * (X_st(3)/r_current)^2 - 1)));
 
     dV_cmd = v_trans1 - v_current;
     dV_mag = abs(dV_cmd);
     if use_noise
         dV_mag = dV_mag * (1 + randn * sys.noise.thrust_err);
     end
-    dv_vec = sign(dV_cmd) * dV_mag * X_st(4:6) / v_current;
+    dv_vec = dV_cmd * X_st(4:6) / v_current;
     X_st(4:6) = X_st(4:6) + dv_vec;
     X_st(7) = X_st(7) * exp(-dV_mag / (sys.Isp * sys.g0));
 end
 
-function [X_st, dV_mag] = apply_circularization_impulse(X_st, sys, use_noise)
+function [X_st, dV_mag] = apply_circularization_impulse(X_st, target_r, X_target_st, sys, use_noise)
     if nargin < 3, use_noise = true; end
     r = X_st(1:3);
     v = X_st(4:6);
+    r_target_current = norm(X_target_st(1:3));
+    v_target_current = norm(X_target_st(4:6));
     r_norm = norm(r);
     h_vec = cross(r, v);
     tangential_dir = cross(h_vec, r);
