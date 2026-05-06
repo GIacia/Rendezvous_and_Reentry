@@ -14,30 +14,35 @@ Budget = table('Size',[0 4], 'VariableTypes',{'string','double','double','double
 m_current = sys.Chaser_Mass_Init;
 
 % 체이서 초기 상태 
-v_insert = sqrt(sys.mu / (sys.Re + sys.h_insert));
-X_chaser_init = [sys.Re+sys.h_insert; 0; 0;  0; v_insert; 0;  0;0;0;1;  0;0;0;  m_current];
+x_insert = [sys.Re+sys.h_insert; 0; 0];
+% v_insert = sqrt(sys.mu / (sys.Re + sys.h_insert));
+v_insert = sqrt(sys.mu / (sys.Re + sys.h_insert) * (1 - sys.J2 * (sys.Re / (sys.Re + sys.h_insert))^2 * (3*x_insert(3)^2/(sys.Re+sys.h_insert)^2 - 1)));  % we want the total mechanical energy to be same as no J2 condition.
+X_chaser_init = [x_insert;  0; 0; v_insert;  0;0;0;1;  0;0;0;  m_current];
 target_radius = sys.Re + sys.h_wait;
 
 % 타겟 위성 상태 세팅 
-v_t0 = sqrt(sys.mu / (sys.Re + sys.h_target));
-X_target = [sys.Re+sys.h_target; 0; 0; 0; v_t0; 0];
+% v_t0 = sqrt(sys.mu / (sys.Re + sys.h_target));
+x_target = [0; 0; sys.Re+sys.h_target];
+v_t0 = sqrt(sys.mu / (sys.Re + sys.h_target) * (1 - sys.J2 * (sys.Re / (sys.Re + sys.h_target))^2 * (3*x_target(3)^2/(sys.Re+sys.h_target)^2 - 1)));  % we want the total mechanical energy to be same as no J2 condition.
+X_target = [x_target; -v_t0; 0; 0];
 
 %% 2. Phase 1: Phasing & Homing 
-fprintf('[Phase 1] 3-DOF 물리 시뮬레이션 시작 (J2 섭동 및 노이즈 포함)...\n');
+fprintf('[Phase 1] 3-DOF 물리 시뮬레이션 시작 (J2 섭동 포함)...\n');
 
 % 변수 세팅
 custom_params.TOF = 10000; % LAMBERT 시 비행 시간 설정 (예: 10000초)
 
 % HOHMANN mode: wait/phase search for target-relative capture point arrival
-custom_params.max_wait = 2*86400;      % [s] search up to 2 days before departure
+%custom_params.max_wait = 2*86400;      % [s] search up to 2 days before departure
+custom_params.max_wait = 2*pi * sys.mu^(-0.5) / ((sys.Re + 300e3)^(-1.5) - (sys.Re + 500e3)^(-1.5));      % [s] search up to 1 relative orbit before departure
 custom_params.dt_scan = 60;            % [s] coarse phase-search spacing
 custom_params.refine_span = 180;       % [s] local refinement half-width
-custom_params.refine_step = 10;        % [s] local refinement spacing
+custom_params.refine_step = 2;         % [s] local refinement spacing
 custom_params.dt_wait = 30;            % [s] waiting-orbit propagation step
 custom_params.dt_transfer = 10;        % [s] Hohmann transfer propagation step
 custom_params.capture_pos_tol = 1000;  % [m] warning threshold for capture-point error
 
-% 타겟의 미래 위치를 임의로 지정 (LAMBERT 모드 타겟팅용)
+% 타겟의 미래 위치를 임의로 지정 (LAMBERT 모드 타겟팅용) // LAMBERT Targeting 현재 미구현 상태
 % 495km 고도의 특정 y축 지점을 향해 날아간다고 가정
 custom_params.target_pos = [0; sys.Re + sys.h_wait; 0]; 
 
@@ -45,11 +50,12 @@ custom_params.target_pos = [0; sys.Re + sys.h_wait; 0];
 phasing_mode = "HOHMANN"; 
 % fprintf('   선택된 기동 방식: %s\n', phasing_mode);
 
-[X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, [1]);
+[X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, 1);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
 fprintf('   도달 고도: %.2f km (목표: 495.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
+fprintf('   목표 지점으로부터 거리: %.2f km\n', norm(X_target(1:3) - X_target(1:3)/norm(X_target(1:3)) * 5000 - X_chaser(1:3))/1000);
 
 %% 3. Phase 2: R-bar Approach & Berthing (6-DOF Simulation)
 fprintf('\n[Phase 2] Starting 6-DOF R-bar Approach (Glideslope Controlled)...\n');
@@ -143,7 +149,7 @@ fprintf('   선택된 기동 방식: %s\n', reentry_mode);
 target_reentry_r = sys.Re + sys.h_reentry;
 
 % Phase 2 Berthing 직후의 X_chaser 상태를 그대로 입력하여 하강
-[X_chaser, dV_p3, fuel_p3, hist_p3, X_target] = Phasing_Propagator(sys, X_chaser, target_reentry_r, reentry_mode, custom_params, X_target, [3]);
+[X_chaser, dV_p3, fuel_p3, hist_p3, X_target] = Phasing_Propagator(sys, X_chaser, target_reentry_r, reentry_mode, custom_params, X_target, 3);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
@@ -184,7 +190,7 @@ plot3(hist_p3.pos(1,:)/1e3, hist_p3.pos(2,:)/1e3, hist_p3.pos(3,:)/1e3, 'r-', 'L
 
 % 타겟 궤도 (500km) 참조선 그리기
 theta = linspace(0, 2*pi, 100);
-plot3((sys.Re+sys.h_target)/1e3*cos(theta), (sys.Re+sys.h_target)/1e3*sin(theta), zeros(1,100), 'k--', 'LineWidth', 1);
+plot3((sys.Re+sys.h_target)/1e3*cos(theta), zeros(1,100), (sys.Re+sys.h_target)/1e3*sin(theta), 'k--', 'LineWidth', 1);
 
 title('3D Mission Trajectory (Earth Centered Inertial)');
 xlabel('X (km)'); ylabel('Y (km)'); zlabel('Z (km)');

@@ -3,6 +3,7 @@ function sys = Mission_Config()
     sys.mu = 3.986004418e14;   % 지구 중력 상수 [m^3/s^2]
     sys.Re = 6378137;          % 지구 적도 반지름 [m]
     sys.J2 = 1.08263e-3;       % J2 Perturbation 계수
+    % sys.J2 = 0;       % J2 Perturbation 계수 test
     sys.g0 = 9.80665;          % 표준 중력 가속도 [m/s^2]
 
     % 위성 제원 (Target & Chaser)
@@ -16,7 +17,7 @@ function sys = Mission_Config()
     sys.h_wait   = 495e3;      % 495 km (Waiting Point)
     sys.h_reentry = 200e3;     % 200 km
     sys.inc = pi/2;            % 극궤도 (90 deg)
-    sys.phase = pi * (1 - ((sys.Re + 400e3)/(sys.Re + 500e3))^1.5); % 호만 전이 phase angle
+    sys.phase = pi * (1 - ((sys.Re + 400e3)/(sys.Re + 500e3))^1.5); % 호만 전이 phase angle, ohne J2 perturbation
     
     % 추진 시스템 사양
     sys.Isp = 200;             % 비추력 [s]

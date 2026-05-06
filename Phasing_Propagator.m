@@ -95,8 +95,16 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
     dt_scan     = get_param(custom_params, 'dt_scan', 60);      % candidate spacing [s]
     max_wait    = get_param(custom_params, 'max_wait', 2*86400);% search horizon [s]
     refine_span = get_param(custom_params, 'refine_span', 180); % local refinement half-width [s]
-    refine_step = get_param(custom_params, 'refine_step', 10);  % local refinement spacing [s]
+    refine_step = get_param(custom_params, 'refine_step', 2);  % local refinement spacing [s]
     pos_tol     = get_param(custom_params, 'capture_pos_tol', 1000); % warning threshold [m]
+
+    if pmode == 3
+        max_wait = 360;
+    else
+        max_wait = max_wait * 10;
+    end
+
+
 
     if isfield(sys, 'capture') && isfield(sys.capture, 'r_rel0')
         desired_rel_lvlh = sys.capture.r_rel0(:);
@@ -169,14 +177,13 @@ function [best_wait, best_metric] = scan_wait_candidates(sys, X_ch0, X_t0, targe
             [X_ch_wait, X_t_wait] = propagate_state_only(X_ch_wait, X_t_wait, sys, dt_to_next, min(60, max(1, dt_to_next)));
         end
         t_prev = t_now;
-        if abs(acos(dot(X_ch_wait(1:3), X_t_wait(1:3))/(norm(X_ch_wait(1:3))*norm(X_t_wait(1:3)))) - sys.phase) > sys.phase && pmode == 1
+        if abs(acos(dot(X_ch_wait(1:3), X_t_wait(1:3))/(norm(X_ch_wait(1:3))*norm(X_t_wait(1:3)))) - sys.phase) > 0.5 * sys.phase && pmode == 1
             continue
         end
 
         [rel_lvlh, rel_vel_lvlh] = predict_hohmann_capture(sys, X_ch_wait, X_t_wait, target_r, TOF, dt_transfer);
         pos_error = norm(rel_lvlh - desired_rel_lvlh);
-        % Position targeting is the main requirement. Relative speed is a soft penalty.
-        metric = pos_error + 1000 * norm(rel_vel_lvlh);
+        metric = pos_error;
 
         if metric < best_metric
             best_metric = metric;
@@ -201,7 +208,7 @@ function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, ~, sys
     v_current = norm(X_st(4:6));
     a_trans = (r_current + target_r) / 2;
 %    v_trans1 = sqrt(sys.mu * (2/r_current - 1/a_trans));
-    v_trans1 = sqrt(sys.mu * ( -1/a_trans + 2/r_current - sys.J2 * sys.Re^2 / r_current^3 * (3 * (X_st(3)/r_current)^2 - 1)));
+    v_trans1 = sqrt(sys.mu * (2/r_current - 1/a_trans - sys.J2 * sys.Re^2 / r_current^3 * (3 * (X_st(3)/r_current)^2 - 1)));
 
     dV_cmd = v_trans1 - v_current;
     dV_mag = abs(dV_cmd);
@@ -237,25 +244,42 @@ function [X_st, dV_mag] = apply_circularization_impulse(X_st, target_r, X_target
 end
 
 %% --- Helper: Propagation ---
-function [X_chaser, X_target, hist] = propagate_for_duration(X_chaser, X_target, sys, duration, dt_nominal, t_offset)
+function [X_chaser, X_target, hist] = propagate_for_duration(X_chaser, X_target, sys, duration, dt, t_offset)
     if nargin < 6, t_offset = 0; end
     hist = init_hist();
     elapsed = 0;
+    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
+    pre_dist = inf;
     while elapsed < duration - 1e-9
-        dt = min(dt_nominal, duration - elapsed);
         [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
         elapsed = elapsed + dt;
         hist = log_full_state(hist, X_chaser, X_target, t_offset + elapsed);
     end
+          
+    %while elapsed < duration - 60 || pre_dist > norm(X_target(1:3) - five_kilo - X_chaser(1:3))
+    %    pre_dist = norm(X_target(1:3) - five_kilo - X_chaser(1:3));
+    %    [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
+    %    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
+    %    elapsed = elapsed + dt;
+    %    hist = log_full_state(hist, X_chaser, X_target, t_offset + elapsed);
+    %end
 end
 
-function [X_chaser, X_target] = propagate_state_only(X_chaser, X_target, sys, duration, dt_nominal)
+function [X_chaser, X_target] = propagate_state_only(X_chaser, X_target, sys, duration, dt)
     elapsed = 0;
+    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
+    pre_dist = inf;
     while elapsed < duration - 1e-9
-        dt = min(dt_nominal, duration - elapsed);
         [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
         elapsed = elapsed + dt;
     end
+        
+    %while elapsed < duration - 60 || pre_dist > norm(X_target(1:3) - five_kilo - X_chaser(1:3))
+    %    pre_dist = norm(X_target(1:3) - five_kilo - X_chaser(1:3));
+    %    [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
+    %    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
+    %    elapsed = elapsed + dt;
+    %end
 end
 
 function [X_chaser_next, X_target_next] = rk4_step_chaser_target(X_chaser, X_target, sys, dt)
