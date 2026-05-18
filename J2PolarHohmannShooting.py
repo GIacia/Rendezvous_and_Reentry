@@ -1,9 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
+DESIRED_REL_LVLH = np.array([0.0, -5.0, 0.0])
 
 from J2PolarHohmann import (
     run_j2_polar_hohmann_rendezvous,
-    non_j2_hohmann_defaults
+    non_j2_hohmann_defaults,
+    lvlh_basis_from_target_state,
+    lvlh_position_to_eci_point,
+    eci_point_to_lvlh_position,
+    relative_position_eci_to_lvlh,
+    relative_position_lvlh_to_eci
 )
 
 
@@ -67,14 +73,13 @@ def evaluate_rendezvous_error(p, verbose=False):
     Returns
     -------
     residual : np.ndarray
-        In-plane relative position error [dx, dz] in km
-        at closest approach.
+        Target-LVLH position error [radial, along-track] in km.
 
     distance : float
-        Minimum distance in km.
+        Minimum distance to desired target-centered LVLH point in km.
 
     result : dict
-        Full propagation result from run_j2_polar_hohmann_rendezvous().
+        Full propagation result.
     """
     p = sanitize_parameters(p)
 
@@ -87,25 +92,27 @@ def evaluate_rendezvous_error(p, verbose=False):
         delta_v=delta_v_km_s,
         gamma=gamma_deg,
         angle_unit="deg",
+        desired_rel_lvlh=DESIRED_REL_LVLH,
         verbose=False
     )
 
-    rel_pos = result["closest_approach"]["relative_position_eci_km"]
+    error_lvlh = result["closest_approach"]["position_error_lvlh_km"]
 
-    # Since this is a polar orbit in the fixed x-z plane,
-    # y should remain nearly zero.
-    # Therefore we optimize the meaningful in-plane residual only.
-    residual = np.array([rel_pos[0], rel_pos[2]], dtype=float)
+    # In the same orbital plane, the meaningful errors are:
+    # x_LVLH = radial error
+    # y_LVLH = along-track error
+    residual = np.array([error_lvlh[0], error_lvlh[1]], dtype=float)
 
     distance = result["closest_approach"]["min_distance_km"]
 
     if verbose:
         print("p =", p)
-        print("residual [x, z] km =", residual)
+        print("desired_rel_lvlh km =", DESIRED_REL_LVLH)
+        print("error_lvlh km =", error_lvlh)
+        print("residual [radial, along-track] km =", residual)
         print("distance km =", distance)
 
     return residual, distance, result
-
 
 # ============================================================
 # Finite-difference Jacobian
@@ -420,7 +427,7 @@ def minimize_delta_v_on_zero_distance_manifold(
     stage1_verbose=True,
     stage2_verbose=True,
     bounds=None,
-    ftol=1e-10
+    ftol=1e-9
 ):
     """
     Minimize delta-V while keeping rendezvous position error zero.
@@ -591,13 +598,31 @@ def minimize_delta_v_on_zero_distance_manifold(
             return total_delta_v_m_s / delta_v_scale_m_s
 
     # ------------------------------------------------------------
-    # Equality constraint
+    # Equality / Inequality constraint
     # ------------------------------------------------------------
+    constraint_tolerance_km = 0.0001
+
     def equality_constraints(p):
         data = eval_cached(p)
         residual = data["residual"]
 
         return residual / residual_scale_km
+    
+    def inequality_constraints(p):
+        """
+        SLSQP inequality constraint:
+            fun(p) >= 0
+
+        Here:
+            constraint_tolerance_km - distance >= 0
+
+        means:
+            distance <= constraint_tolerance_km
+        """
+        data = eval_cached(p)
+        distance = data["distance"]
+
+        return constraint_tolerance_km - distance
 
     constraints = [
         {
@@ -746,7 +771,45 @@ def minimize_delta_v_on_zero_distance_manifold(
 # ============================================================
 # Plotting for constrained optimization
 # ============================================================
+def plot_constrained_delta_v_history(history, log_distance=True):
+    steps = history["step"]
 
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+    ax = axes[0, 0]
+    ax.plot(steps, history["distance_km"], marker="o")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Distance error [km]")
+    ax.set_title("Distance Error")
+    ax.grid(True)
+    if log_distance:
+        ax.set_yscale("log")
+
+    ax = axes[0, 1]
+    ax.plot(steps, history["delta_v_m_s"], marker="o")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Delta-V 1 [m/s]")
+    ax.set_title("Delta-V History")
+    ax.grid(True)
+
+    ax = axes[1, 0]
+    ax.plot(steps, history["gamma_deg"], marker="o")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Gamma [deg]")
+    ax.set_title("Gamma History")
+    ax.grid(True)
+
+    ax = axes[1, 1]
+    ax.plot(steps, history["relative_speed_m_s"], marker="o")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Relative speed [m/s]")
+    ax.set_title("Terminal Relative Speed")
+    ax.grid(True)
+
+    fig.suptitle("Constrained J2 Polar Hohmann Optimization History", fontsize=14)
+    plt.tight_layout()
+    plt.show()
+'''
 def plot_constrained_delta_v_history(history, log_distance=True):
     steps = history["step"]
 
@@ -789,41 +852,12 @@ def plot_constrained_delta_v_history(history, log_distance=True):
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+'''
 
 
 # ============================================================
 # Example run
 # ============================================================
-
-if __name__ != "__main__":
-
-    # Start from non-J2 Hohmann default.
-    p0 = get_default_parameter_vector()
-
-    print("Initial guess:")
-    print(f"phase angle : {p0[0]:.10f} deg")
-    print(f"delta-V     : {p0[1]:.10f} m/s")
-    print(f"gamma       : {p0[2]:.10f} deg")
-
-    output = optimize_j2_hohmann_rendezvous(
-        p0=p0,
-        max_iter=25,
-        tolerance_km=1e-3,
-        damping_initial=1e-2,
-        finite_steps=np.array([0.01, 0.01, 0.01]),
-        max_update=np.array([3.0, 20.0, 3.0]),
-        verbose=True
-    )
-
-    print("\n========== Optimized Result ==========")
-    print(output["optimized_parameters"])
-    print(f"Best distance: {output['best_distance_km']:.12f} km")
-    print("Best residual [x, z] km:")
-    print(output["best_residual_xz_km"])
-    print("======================================")
-
-    plot_distance_history(output["history"], log_scale=True)
-    plot_parameter_history(output["history"])
 
 if __name__ == "__main__":
     output = minimize_delta_v_on_zero_distance_manifold(

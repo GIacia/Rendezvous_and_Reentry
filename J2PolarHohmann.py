@@ -55,8 +55,9 @@ def circular_polar_state(radius_km, u_rad, earth=EarthJ2()):
     Direction: +x -> +z.
     """
     r = radius_km * (np.cos(u_rad) * P_HAT + np.sin(u_rad) * Q_HAT)
-
-    v_mag = np.sqrt(earth.mu / radius_km)
+    
+    v_mag_np = np.sqrt(earth.mu / radius_km)
+    v_mag = np.sqrt(earth.mu / radius_km * (1 - earth.J2 * (earth.radius / radius_km)**2 * (3*np.cos(u_rad) - 1)))
     v = v_mag * (-np.sin(u_rad) * P_HAT + np.cos(u_rad) * Q_HAT)
 
     return np.concatenate([r, v])
@@ -501,30 +502,86 @@ def find_closest_approach(
     sol,
     t_start,
     t_end,
-    sample_count=1000
+    sample_count=1000,
+    desired_rel_lvlh=None
 ):
     """
-    Finds closest target-chaser distance inside [t_start, t_end].
+    Finds closest approach to a desired target-centered LVLH point.
+
+    desired_rel_lvlh:
+        [radial outward, along-track, orbit normal] in km
+
+        [0, 0, 0]      : target body
+        [-5, 0, 0]     : 5 km below target, radial inward
+        [0, -5, 0]     : 5 km behind target, along-track backward
     """
+    if desired_rel_lvlh is None:
+        desired_rel_lvlh = np.array([0.0, 0.0, 0.0])
+    else:
+        desired_rel_lvlh = np.array(desired_rel_lvlh, dtype=float)
+
+    def error_at_time(t):
+        y = sol.sol(t)
+
+        target_state = y[0:6]
+        chaser_state = y[6:12]
+
+        r_t = target_state[0:3]
+        v_t = target_state[3:6]
+        r_c = chaser_state[0:3]
+        v_c = chaser_state[3:6]
+
+        C_L2I, _ = lvlh_basis_from_target_state(target_state)
+
+        desired_rel_eci = C_L2I @ desired_rel_lvlh
+        desired_point_eci = r_t + desired_rel_eci
+
+        # Velocity of a point fixed in target LVLH frame
+        h_vec = np.cross(r_t, v_t)
+        omega_eci = h_vec / np.linalg.norm(r_t)**2
+        desired_point_velocity_eci = v_t + np.cross(omega_eci, desired_rel_eci)
+
+        position_error_eci = r_c - desired_point_eci
+        position_error_lvlh = eci_point_to_lvlh_position(
+            target_state_eci=target_state,
+            point_eci=r_c
+        ) - desired_rel_lvlh
+
+        velocity_error_eci = v_c - desired_point_velocity_eci
+
+        distance = np.linalg.norm(position_error_lvlh)
+
+        return {
+            "y": y,
+            "target_state": target_state,
+            "chaser_state": chaser_state,
+            "desired_point_eci": desired_point_eci,
+            "desired_point_velocity_eci": desired_point_velocity_eci,
+            "position_error_eci": position_error_eci,
+            "position_error_lvlh": position_error_lvlh,
+            "velocity_error_eci": velocity_error_eci,
+            "distance": distance
+        }
+
     ts = np.linspace(t_start, t_end, sample_count)
-    ys = sol.sol(ts)
 
-    separations = np.linalg.norm(ys[0:3, :] - ys[6:9, :], axis=0)
+    distances = np.array([
+        error_at_time(t)["distance"]
+        for t in ts
+    ])
 
-    idx = int(np.argmin(separations))
+    idx = int(np.argmin(distances))
 
     if idx == 0 or idx == len(ts) - 1:
         t_min = ts[idx]
-        y_min = sol.sol(t_min)
-        distance_min = np.linalg.norm(y_min[0:3] - y_min[6:9])
+        data_min = error_at_time(t_min)
 
     else:
         t_left = ts[idx - 1]
         t_right = ts[idx + 1]
 
         def distance_function(t):
-            y = sol.sol(t)
-            return np.linalg.norm(y[0:3] - y[6:9])
+            return error_at_time(t)["distance"]
 
         result = minimize_scalar(
             distance_function,
@@ -534,22 +591,28 @@ def find_closest_approach(
         )
 
         t_min = result.x
-        distance_min = result.fun
-        y_min = sol.sol(t_min)
-
-    rel_pos = y_min[6:9] - y_min[0:3]
-    rel_vel = y_min[9:12] - y_min[3:6]
+        data_min = error_at_time(t_min)
 
     return {
         "t_closest_after_burn_s": t_min,
-        "min_distance_km": distance_min,
-        "relative_position_eci_km": rel_pos,
-        "relative_velocity_eci_km_s": rel_vel,
-        "relative_speed_km_s": np.linalg.norm(rel_vel),
-        "target_state_eci_at_closest": y_min[0:6],
-        "chaser_state_eci_at_closest": y_min[6:12]
-    }
+        "min_distance_km": data_min["distance"],
 
+        "desired_rel_lvlh_km": desired_rel_lvlh,
+        "desired_point_eci_km": data_min["desired_point_eci"],
+        "desired_point_velocity_eci_km_s": data_min["desired_point_velocity_eci"],
+
+        "position_error_eci_km": data_min["position_error_eci"],
+        "position_error_lvlh_km": data_min["position_error_lvlh"],
+        "velocity_error_eci_km_s": data_min["velocity_error_eci"],
+
+        # Backward-compatible names
+        "relative_position_eci_km": data_min["position_error_eci"],
+        "relative_velocity_eci_km_s": data_min["velocity_error_eci"],
+        "relative_speed_km_s": np.linalg.norm(data_min["velocity_error_eci"]),
+
+        "target_state_eci_at_closest": data_min["target_state"],
+        "chaser_state_eci_at_closest": data_min["chaser_state"]
+    }
 
 # ============================================================
 # Main propagator
@@ -571,6 +634,7 @@ def run_j2_polar_hohmann_rendezvous(
     max_step_transfer_s=20.0,
     wait_sample_step_s=60.0,
     closest_sample_count=1200,
+    desired_rel_lvlh=None,
     verbose=True,
     earth=EarthJ2()
 ):
@@ -629,6 +693,11 @@ def run_j2_polar_hohmann_rendezvous(
 
     if delta_v is None:
         delta_v = defaults["delta_v_1_km_s"]
+
+    if desired_rel_lvlh is None:
+        desired_rel_lvlh = np.array([0, 0, 0])
+    else:
+        desired_rel_lvlh = np.array(desired_rel_lvlh)
 
     phase_angle = wrap_to_2pi(phase_angle)
 
@@ -723,7 +792,8 @@ def run_j2_polar_hohmann_rendezvous(
         sol=sol_transfer,
         t_start=0.0,
         t_end=post_burn_duration_s,
-        sample_count=closest_sample_count
+        sample_count=closest_sample_count,
+        desired_rel_lvlh=desired_rel_lvlh
     )
 
     result = {
@@ -804,5 +874,6 @@ if __name__ == "__main__":
         delta_v=None,         # default: non-J2 Hohmann first impulse
         gamma=0.0,            # pure tangential burn
         angle_unit="rad",
+        desired_rel_lvlh=[0,-5,0],
         verbose=True
     )
