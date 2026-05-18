@@ -17,7 +17,7 @@ function sys = Mission_Config()
     sys.h_wait   = 495e3;      % 495 km (Waiting Point)
     sys.h_reentry = 200e3;     % 200 km
     sys.inc = pi/2;            % 극궤도 (90 deg)
-    sys.phase = pi * (1 - ((sys.Re + 400e3)/(sys.Re + 500e3))^1.5); % 호만 전이 phase angle, ohne J2 perturbation
+    sys.phase = pi * (1 - ((sys.Re + (sys.h_insert + sys.h_wait) * 500)/(sys.Re + sys.h_wait * 1000))^1.5); % 호만 전이 phase angle, ohne J2 perturbation
     
     % 추진 시스템 사양
     sys.Isp = 200;             % 비추력 [s]

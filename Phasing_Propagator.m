@@ -101,7 +101,7 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
     if pmode == 3
         max_wait = 360;
     else
-        max_wait = max_wait * 10;
+        max_wait = max_wait;
     end
 
 
