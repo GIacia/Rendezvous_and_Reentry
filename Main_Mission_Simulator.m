@@ -30,32 +30,50 @@ X_target = [x_target; -v_t0; 0; 0];
 fprintf('[Phase 1] 3-DOF 물리 시뮬레이션 시작 (J2 섭동 포함)...\n');
 
 % 변수 세팅
-custom_params.TOF = 10000; % LAMBERT 시 비행 시간 설정 (예: 10000초)
+custom_params = struct();
+custom_params.TOF = 10000; % LAMBERT 모드용 예비값
+custom_params.target_pos = [0; 0; sys.Re + sys.h_wait]; % LAMBERT 모드용 예비값
 
-% HOHMANN mode: wait/phase search for target-relative capture point arrival
-%custom_params.max_wait = 2*86400;      % [s] search up to 2 days before departure
-custom_params.max_wait = 2*pi * sys.mu^(-0.5) / ((sys.Re + 300e3)^(-1.5) - (sys.Re + 500e3)^(-1.5));      % [s] search up to 1 relative orbit before departure
-custom_params.dt_scan = 60;            % [s] coarse phase-search spacing
-custom_params.refine_span = 180;       % [s] local refinement half-width
-custom_params.refine_step = 2;         % [s] local refinement spacing
-custom_params.dt_wait = 30;            % [s] waiting-orbit propagation step
-custom_params.dt_transfer = 10;        % [s] Hohmann transfer propagation step
-custom_params.capture_pos_tol = 1000;  % [m] warning threshold for capture-point error
+% Prameters for "CUSTOM IMPULSE" Mode: Phase_angle, delta_v, gamma value from external python program
+custom_params.phase_angle = deg2rad(3.8244);       % [rad] 예: deg2rad(3.88)
+custom_params.delta_v     = 57.9938;                % [m/s] 예: 57.2
+custom_params.gamma       = deg2rad(0.078489);       % [rad] 예: deg2rad(-0.0153)
+custom_params.phase_angle_unit = "rad"; % "rad" or "deg"
+custom_params.gamma_unit       = "rad"; % "rad" or "deg"
 
-% 타겟의 미래 위치를 임의로 지정 (LAMBERT 모드 타겟팅용) // LAMBERT Targeting 현재 미구현 상태
-% 495km 고도의 특정 y축 지점을 향해 날아간다고 가정
-custom_params.target_pos = [0; sys.Re + sys.h_wait; 0]; 
+% Phase 1 종료 목표: Target 기준 LVLH 상대위치 [m]
+custom_params.desired_rel_lvlh = [0; -5000; 0];
 
-% 원하는 모드로 문자열만 변경하세요: "HOHMANN", "LAMBERT"
-phasing_mode = "HOHMANN"; 
-% fprintf('   선택된 기동 방식: %s\n', phasing_mode);
+% 이벤트 탐지/전파 설정
+custom_params.time_step = 10;           % [s] 기본 propagation step
+custom_params.dt_phase = 5;            % [s] phase-angle 탐지용 coarse step
+custom_params.dt_capture = 5;          % [s] capture 탐지용 coarse step
+custom_params.max_wait = 2*pi * sys.mu^(-0.5) / ((sys.Re + 300e3)^(-1.5) - (sys.Re + 500e3)^(-1.5));
+custom_params.max_capture_time = 30000; % [s] impulse 이후 최대 추적 시간
+custom_params.phase_tol = 1e-7;         % [rad] phase-angle event tolerance
+custom_params.event_time_tol = 1e-3;    % [s] event refinement tolerance
+custom_params.capture_pos_tol = 0.5;    % [m] desired_rel_lvlh 도달 판정 허용오차
+custom_params.min_capture_time = 0;     % [s] 너무 이른 local minimum을 무시하고 싶으면 키우기
+
+% 원하는 모드로 문자열만 변경하세요: "CUSTOM_IMPULSE", "HOHMANN", "LAMBERT"
+phasing_mode = "CUSTOM_IMPULSE";
 
 [X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, 1);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
-fprintf('   도달 고도: %.2f km (목표: 495.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
-fprintf('   목표 지점으로부터 거리: %.2f km\n', norm(X_target(1:3) - X_target(1:3)/norm(X_target(1:3)) * 5000 - X_chaser(1:3))/1000);
+
+h_vec_p1 = cross(X_target(1:3), X_target(4:6));
+i_u_p1 = X_target(1:3)/norm(X_target(1:3));
+k_u_p1 = h_vec_p1/norm(h_vec_p1);
+j_u_p1 = cross(k_u_p1, i_u_p1);
+C_I2L_p1 = [i_u_p1'; j_u_p1'; k_u_p1'];
+rel_p1_lvlh = C_I2L_p1 * (X_chaser(1:3) - X_target(1:3));
+miss_p1 = norm(rel_p1_lvlh - custom_params.desired_rel_lvlh);
+
+fprintf('   Phase 1 종료 LVLH 상대위치: [%+.3f, %+.3f, %+.3f] m\n', rel_p1_lvlh(1), rel_p1_lvlh(2), rel_p1_lvlh(3));
+fprintf('   desired_rel_lvlh 오차: %.6f m\n', miss_p1);
+fprintf('   Phase 1 종료 고도: %.2f km\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
 
 %% 3. Phase 2: R-bar Approach & Berthing (6-DOF Simulation)
 fprintf('\n[Phase 2] Starting 6-DOF R-bar Approach (Glideslope Controlled)...\n');
@@ -71,14 +89,14 @@ i_u = r_t/norm(r_t); k_u = h_vec/norm(h_vec); j_u = cross(k_u, i_u);
 C_I2L = [i_u'; j_u'; k_u']; % ECI to LVLH rotation matrix
 
 if use_forced_capture
-    offset_lvlh = [-5000; 0; 0]; % R-bar 5 km below target
-    v_app_initial = [2.0; 0; 0]; % initial approach velocity in LVLH
+    offset_lvlh = custom_params.desired_rel_lvlh; % desired initial positioni in proximity operation
+    v_app_initial = - 2 * offset_lvlh / norm(offset_lvlh); % initial approach velocity in LVLH
 
     r_c_new = r_t + C_I2L' * offset_lvlh;
     w_lvlh_eci = h_vec / norm(r_t)^2;
     v_c_new = v_t + C_I2L'*v_app_initial + cross(w_lvlh_eci, C_I2L' * offset_lvlh);
     X_chaser(1:6) = [r_c_new; v_c_new];
-    fprintf('   forced capture enabled: chaser reset to R-bar 5 km point.\n');
+    fprintf('   forced capture enabled: chaser reset to desired point.\n');
 else
     rel0_lvlh = C_I2L * (X_chaser(1:3) - X_target(1:3));
     fprintf('   using propagated Phase 1 final state. Initial LVLH rel-pos = [%+.1f, %+.1f, %+.1f] m\n', ...

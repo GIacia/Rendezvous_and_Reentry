@@ -4,12 +4,7 @@ DESIRED_REL_LVLH = np.array([0.0, -5.0, 0.0])
 
 from J2PolarHohmann import (
     run_j2_polar_hohmann_rendezvous,
-    non_j2_hohmann_defaults,
-    lvlh_basis_from_target_state,
-    lvlh_position_to_eci_point,
-    eci_point_to_lvlh_position,
-    relative_position_eci_to_lvlh,
-    relative_position_lvlh_to_eci
+    non_j2_hohmann_defaults
 )
 
 
@@ -92,6 +87,8 @@ def evaluate_rendezvous_error(p, verbose=False):
         delta_v=delta_v_km_s,
         gamma=gamma_deg,
         angle_unit="deg",
+        initial_phase_angle=90.0,
+        initial_chaser_angle=0.0,
         desired_rel_lvlh=DESIRED_REL_LVLH,
         verbose=False
     )

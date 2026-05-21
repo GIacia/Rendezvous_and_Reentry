@@ -33,6 +33,11 @@ function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagato
         dV_used = dV_used + dV;
         hist = append_hist(hist, sub_hist);
 
+    elseif mode == "CUSTOM_IMPULSE"
+        [X_state, X_target_state, dV, sub_hist] = execute_custom_impulse(sys, X_state, X_target_state, custom_params);
+        dV_used = dV_used + dV;
+        hist = append_hist(hist, sub_hist);
+
     elseif mode == "LAMBERT"
         TOF = custom_params.TOF;
         target_pos = custom_params.target_pos;
@@ -82,6 +87,400 @@ function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagato
         X_target_final = X_target_state;
     else
         X_target_final = [];
+    end
+end
+
+%% --- Helper: Custom phase-triggered impulsive boost ---
+function [X_st, X_target_st, dV_mag, sub_hist] = execute_custom_impulse(sys, X_st, X_target_st, custom_params)
+    % User-defined phasing logic:
+    %   1) propagate chaser/target until the signed phase angle reaches the input value,
+    %   2) apply an impulsive delta-V tilted by gamma from local tangential direction,
+    %   3) continue propagation until the requested LVLH relative position is reached
+    %      or until the closest-approach point is detected.
+
+    if isempty(X_target_st)
+        error('CUSTOM_IMPULSE mode requires X_target0 = [r_target; v_target].');
+    end
+
+    phase_angle = get_angle_param_rad(custom_params, 'phase_angle', 'phase_angle_unit');
+    delta_v     = get_required_scalar(custom_params, 'delta_v');
+    gamma       = get_angle_param_rad(custom_params, 'gamma', 'gamma_unit');
+
+    desired_rel_lvlh = get_vector_param(custom_params, 'desired_rel_lvlh', [0; -5; 0]);
+
+    time_step = get_param(custom_params, 'time_step', 10);
+    dt_phase  = get_param(custom_params, 'dt_phase',  get_param(custom_params, 'dt_wait',     time_step));
+    dt_cap    = get_param(custom_params, 'dt_capture',get_param(custom_params, 'dt_transfer', time_step));
+
+    max_wait = get_param(custom_params, 'max_wait', 2*86400);
+    default_max_capture = 2 * 2*pi * sqrt(norm(X_st(1:3))^3 / sys.mu);
+    max_capture_time = get_param(custom_params, 'max_capture_time', default_max_capture);
+
+    phase_tol = get_param(custom_params, 'phase_tol', 1e-7);        % [rad]
+    event_time_tol = get_param(custom_params, 'event_time_tol', 1e-3); % [s]
+    capture_pos_tol = get_param(custom_params, 'capture_pos_tol', 0.5); % [m]
+    min_capture_time = get_param(custom_params, 'min_capture_time', 0); % [s]
+
+    if delta_v < 0
+        error('custom_params.delta_v must be non-negative [m/s].');
+    end
+
+    sub_hist = init_hist();
+
+    fprintf('   * Custom impulsive phasing mode 시작...\n');
+    fprintf('     - target signed phase angle: %.8f rad (%.6f deg)\n', phase_angle, rad2deg(phase_angle));
+    fprintf('     - commanded delta-V: %.6f m/s, gamma: %.8f rad (%.6f deg)\n', delta_v, gamma, rad2deg(gamma));
+    fprintf('     - desired LVLH rel-pos: [%+.3f, %+.3f, %+.3f] m\n', desired_rel_lvlh(1), desired_rel_lvlh(2), desired_rel_lvlh(3));
+
+    [X_st, X_target_st, wait_hist, wait_time, final_phase_error] = ...
+        propagate_to_phase_angle(sys, X_st, X_target_st, phase_angle, dt_phase, max_wait, phase_tol, event_time_tol);
+    sub_hist = append_hist(sub_hist, wait_hist);
+
+    fprintf('     - departure wait time: %.3f s, final phase error: %.3e rad\n', wait_time, final_phase_error);
+
+    [X_st, dV_mag] = apply_custom_impulse(X_st, delta_v, gamma, sys);
+    sub_hist = log_full_state(sub_hist, X_st, X_target_st, wait_time); % same epoch, after impulse
+
+    [X_st, X_target_st, cap_hist, capture_time, miss, rel_lvlh, rel_vel_lvlh, reached_tol] = ...
+        propagate_until_capture(sys, X_st, X_target_st, desired_rel_lvlh, dt_cap, max_capture_time, ...
+                                capture_pos_tol, event_time_tol, min_capture_time, wait_time);
+    sub_hist = append_hist(sub_hist, cap_hist);
+
+    if reached_tol
+        fprintf('     - capture tolerance reached.\n');
+    else
+        fprintf('     - closest-approach capture used. Check miss distance.\n');
+    end
+    fprintf('     - phase-1 duration after impulse: %.3f s\n', capture_time);
+    fprintf('     - final LVLH rel-pos: [%+.3f, %+.3f, %+.3f] m\n', rel_lvlh(1), rel_lvlh(2), rel_lvlh(3));
+    fprintf('     - desired-position miss: %.6f m, rel-speed: %.6f m/s\n', miss, norm(rel_vel_lvlh));
+    if miss > capture_pos_tol
+        fprintf('     - warning: miss is larger than capture_pos_tol = %.3f m. Re-check phase_angle/delta_v/gamma.\n', capture_pos_tol);
+    end
+end
+
+function [X_ch, X_t, hist, elapsed, final_err] = propagate_to_phase_angle(sys, X_ch, X_t, phase_angle, dt, max_wait, phase_tol, event_time_tol)
+    hist = init_hist();
+    elapsed = 0;
+    final_err = phase_error_to_target(X_ch, X_t, phase_angle);
+
+    if abs(final_err) <= phase_tol
+        hist = log_full_state(hist, X_ch, X_t, elapsed);
+        return;
+    end
+
+    X_prev = X_ch;
+    T_prev = X_t;
+    err_prev = final_err;
+    t_prev = elapsed;
+
+    while elapsed < max_wait - 1e-12
+        dt_eff = min(dt, max_wait - elapsed);
+        [X_next, T_next] = rk4_step_chaser_target(X_prev, T_prev, sys, dt_eff);
+        err_next = phase_error_to_target(X_next, T_next, phase_angle);
+
+        if is_phase_crossing(err_prev, err_next) || abs(err_next) <= phase_tol
+            [X_ch, X_t, local_t, final_err] = refine_phase_crossing(sys, X_prev, T_prev, phase_angle, dt_eff, phase_tol, event_time_tol);
+            elapsed = t_prev + local_t;
+            hist = log_full_state(hist, X_ch, X_t, elapsed);
+            return;
+        end
+
+        elapsed = elapsed + dt_eff;
+        X_prev = X_next;
+        T_prev = T_next;
+        err_prev = err_next;
+        t_prev = elapsed;
+        hist = log_full_state(hist, X_prev, T_prev, elapsed);
+    end
+
+    error('Phase angle %.8f rad was not reached within max_wait = %.1f s. Last phase error = %.3e rad.', ...
+          phase_angle, max_wait, err_prev);
+end
+
+function tf = is_phase_crossing(err_a, err_b)
+    % Assumes dt is small enough that the wrapped phase error does not jump by pi.
+    tf = (err_a == 0) || (err_b == 0) || (sign(err_a) ~= sign(err_b) && abs(err_a - err_b) < pi);
+end
+
+function [X_best, T_best, t_best, err_best] = refine_phase_crossing(sys, X0, T0, phase_angle, dt_window, phase_tol, event_time_tol)
+    err0 = phase_error_to_target(X0, T0, phase_angle);
+    [X1, T1] = propagate_state_only(X0, T0, sys, dt_window, min(1, max(dt_window/20, 1e-3)));
+    err1 = phase_error_to_target(X1, T1, phase_angle);
+
+    if abs(err0) <= phase_tol
+        X_best = X0; T_best = T0; t_best = 0; err_best = err0; return;
+    elseif abs(err1) <= phase_tol
+        X_best = X1; T_best = T1; t_best = dt_window; err_best = err1; return;
+    end
+
+    if ~is_phase_crossing(err0, err1)
+        [X_best, T_best, t_best, err_best] = refine_phase_min_abs(sys, X0, T0, phase_angle, dt_window, event_time_tol);
+        return;
+    end
+
+    lo = 0; hi = dt_window;
+    err_lo = err0;
+    X_best = X1; T_best = T1; t_best = hi; err_best = err1;
+
+    while (hi - lo) > event_time_tol
+        mid = 0.5 * (lo + hi);
+        [X_mid, T_mid] = propagate_state_only(X0, T0, sys, mid, min(1, max(mid/20, 1e-3)));
+        err_mid = phase_error_to_target(X_mid, T_mid, phase_angle);
+
+        if abs(err_mid) < abs(err_best)
+            X_best = X_mid; T_best = T_mid; t_best = mid; err_best = err_mid;
+        end
+        if abs(err_mid) <= phase_tol
+            return;
+        end
+
+        if is_phase_crossing(err_lo, err_mid)
+            hi = mid;
+        else
+            lo = mid;
+            err_lo = err_mid;
+        end
+    end
+
+    [X_best, T_best] = propagate_state_only(X0, T0, sys, t_best, min(1, max(t_best/20, 1e-3)));
+    err_best = phase_error_to_target(X_best, T_best, phase_angle);
+end
+
+function [X_best, T_best, t_best, err_best] = refine_phase_min_abs(sys, X0, T0, phase_angle, dt_window, event_time_tol)
+    phi = (sqrt(5) - 1) / 2;
+    a = 0; b = dt_window;
+    c = b - phi*(b-a);
+    d = a + phi*(b-a);
+    fc = phase_abs_error_at_time(sys, X0, T0, phase_angle, c);
+    fd = phase_abs_error_at_time(sys, X0, T0, phase_angle, d);
+    while (b - a) > event_time_tol
+        if fc > fd
+            a = c; c = d; fc = fd;
+            d = a + phi*(b-a);
+            fd = phase_abs_error_at_time(sys, X0, T0, phase_angle, d);
+        else
+            b = d; d = c; fd = fc;
+            c = b - phi*(b-a);
+            fc = phase_abs_error_at_time(sys, X0, T0, phase_angle, c);
+        end
+    end
+    t_best = 0.5*(a+b);
+    [X_best, T_best] = propagate_state_only(X0, T0, sys, t_best, min(1, max(t_best/20, 1e-3)));
+    err_best = phase_error_to_target(X_best, T_best, phase_angle);
+end
+
+function val = phase_abs_error_at_time(sys, X0, T0, phase_angle, t_eval)
+    [X_eval, T_eval] = propagate_state_only(X0, T0, sys, t_eval, min(1, max(t_eval/20, 1e-3)));
+    val = abs(phase_error_to_target(X_eval, T_eval, phase_angle));
+end
+
+function [X_ch, X_t, hist, capture_time, miss, rel_lvlh, rel_vel_lvlh, reached_tol] = ...
+    propagate_until_capture(sys, X_ch, X_t, desired_rel_lvlh, dt, max_time, pos_tol, event_time_tol, min_capture_time, t_offset)
+
+    hist = init_hist();
+    elapsed = 0;
+    reached_tol = false;
+
+    [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
+    d_now = norm(rel_lvlh - desired_rel_lvlh);
+
+    best_X = X_ch; best_T = X_t; best_t = 0; best_d = d_now;
+
+    X_prev2 = []; T_prev2 = []; d_prev2 = inf; t_prev2 = 0;
+    X_prev = X_ch; T_prev = X_t; d_prev = d_now; t_prev = 0;
+
+    if d_now <= pos_tol
+        hist = log_full_state(hist, X_ch, X_t, t_offset);
+        capture_time = 0; miss = d_now; reached_tol = true;
+        return;
+    end
+
+    while elapsed < max_time - 1e-12
+        dt_eff = min(dt, max_time - elapsed);
+        [X_next, T_next] = rk4_step_chaser_target(X_prev, T_prev, sys, dt_eff);
+        t_next = t_prev + dt_eff;
+        [rel_next, ~] = relative_state_lvlh(X_next(1:6), T_next);
+        d_next = norm(rel_next - desired_rel_lvlh);
+
+        hist = log_full_state(hist, X_next, T_next, t_offset + t_next);
+
+        if d_next < best_d
+            best_X = X_next; best_T = T_next; best_t = t_next; best_d = d_next;
+        end
+
+        if d_next <= pos_tol
+            [X_ref, T_ref, local_t, d_ref] = refine_distance_minimum(sys, X_prev, T_prev, desired_rel_lvlh, dt_eff, event_time_tol);
+            X_ch = X_ref; X_t = T_ref; capture_time = t_prev + local_t; miss = d_ref;
+            hist = trim_hist_after(hist, t_offset + capture_time);
+            hist = log_full_state(hist, X_ch, X_t, t_offset + capture_time);
+            [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
+            reached_tol = miss <= pos_tol;
+            return;
+        end
+
+        if ~isempty(X_prev2) && (t_next >= min_capture_time) && (d_prev <= d_prev2) && (d_next > d_prev)
+            % A local minimum was bracketed.  Do NOT stop here unless the
+            % requested tolerance is actually reached.  The external Python
+            % optimizer may be targeting a later encounter, so returning at
+            % the first local minimum can create km-level disagreement.
+            [X_ref, T_ref, local_t, d_ref] = refine_distance_minimum(sys, X_prev2, T_prev2, desired_rel_lvlh, t_next - t_prev2, event_time_tol);
+            t_ref = t_prev2 + local_t;
+
+            if d_ref < best_d
+                best_X = X_ref; best_T = T_ref; best_t = t_ref; best_d = d_ref;
+            end
+
+            if d_ref <= pos_tol
+                X_ch = X_ref; X_t = T_ref; capture_time = t_ref; miss = d_ref;
+                hist = trim_hist_after(hist, t_offset + capture_time);
+                hist = log_full_state(hist, X_ch, X_t, t_offset + capture_time);
+                [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
+                reached_tol = true;
+                return;
+            end
+            % Otherwise continue scanning until max_time and return the best
+            % global sampled/refined closest approach at the end.
+        end
+
+        X_prev2 = X_prev; T_prev2 = T_prev; d_prev2 = d_prev; t_prev2 = t_prev;
+        X_prev = X_next; T_prev = T_next; d_prev = d_next; t_prev = t_next;
+        elapsed = t_next;
+    end
+
+    % If no local minimum was bracketed, return the best sampled state.
+    X_ch = best_X; X_t = best_T; capture_time = best_t; miss = best_d;
+    hist = trim_hist_after(hist, t_offset + capture_time);
+    hist = log_full_state(hist, X_ch, X_t, t_offset + capture_time);
+    [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
+    reached_tol = miss <= pos_tol;
+end
+
+function [X_best, T_best, t_best, d_best] = refine_distance_minimum(sys, X0, T0, desired_rel_lvlh, dt_window, event_time_tol)
+    phi = (sqrt(5) - 1) / 2;
+    a = 0; b = dt_window;
+    c = b - phi*(b-a);
+    d = a + phi*(b-a);
+    fc = distance_to_desired_at_time(sys, X0, T0, desired_rel_lvlh, c);
+    fd = distance_to_desired_at_time(sys, X0, T0, desired_rel_lvlh, d);
+
+    while (b - a) > event_time_tol
+        if fc > fd
+            a = c; c = d; fc = fd;
+            d = a + phi*(b-a);
+            fd = distance_to_desired_at_time(sys, X0, T0, desired_rel_lvlh, d);
+        else
+            b = d; d = c; fd = fc;
+            c = b - phi*(b-a);
+            fc = distance_to_desired_at_time(sys, X0, T0, desired_rel_lvlh, c);
+        end
+    end
+
+    t_best = 0.5*(a+b);
+    [X_best, T_best] = propagate_state_only(X0, T0, sys, t_best, min(1, max(t_best/20, 1e-3)));
+    d_best = distance_to_desired(X_best, T_best, desired_rel_lvlh);
+end
+
+function d = distance_to_desired_at_time(sys, X0, T0, desired_rel_lvlh, t_eval)
+    [X_eval, T_eval] = propagate_state_only(X0, T0, sys, t_eval, min(1, max(t_eval/20, 1e-3)));
+    d = distance_to_desired(X_eval, T_eval, desired_rel_lvlh);
+end
+
+function d = distance_to_desired(X_ch, X_t, desired_rel_lvlh)
+    [rel_lvlh, ~] = relative_state_lvlh(X_ch(1:6), X_t);
+    d = norm(rel_lvlh - desired_rel_lvlh);
+end
+
+function [X_st, dV_mag] = apply_custom_impulse(X_st, dV_cmd, gamma, sys)
+    r = X_st(1:3);
+    v = X_st(4:6);
+    r_hat = r / norm(r);
+    h_hat = cross(r, v);
+    h_hat = h_hat / norm(h_hat);
+    t_hat = cross(h_hat, r_hat);
+    t_hat = t_hat / norm(t_hat);
+
+    % Convention: gamma > 0 tilts the burn from tangential toward radial-outward.
+    burn_dir = cos(gamma) * t_hat + sin(gamma) * r_hat;
+    burn_dir = burn_dir / norm(burn_dir);
+
+    X_st(4:6) = X_st(4:6) + dV_cmd * burn_dir;
+    X_st(7) = X_st(7) * exp(-dV_cmd / (sys.Isp * sys.g0));
+    dV_mag = dV_cmd;
+end
+
+function err = phase_error_to_target(X_ch, X_t, phase_angle)
+    ph = signed_phase_angle(X_ch(1:3), X_t(1:3), X_t(4:6));
+    err = wrap_to_pi_custom(ph - phase_angle);
+end
+
+function ph = signed_phase_angle(r_chaser, r_target, v_target)
+    % Signed angle from chaser radius vector to target radius vector, measured
+    % about the target orbit angular-momentum direction. Positive means target
+    % is ahead of chaser in the target orbital plane.
+    h_hat = cross(r_target, v_target);
+    h_hat = h_hat / norm(h_hat);
+    cross_rt = cross(r_chaser, r_target);
+    ph = atan2(dot(h_hat, cross_rt), dot(r_chaser, r_target));
+end
+
+function angle = get_angle_param_rad(s, name, unit_name)
+    angle = get_required_scalar(s, name);
+    unit = "rad";
+    if isstruct(s) && isfield(s, unit_name) && ~isempty(s.(unit_name))
+        unit = string(s.(unit_name));
+    end
+    unit = lower(unit);
+    if unit == "deg" || unit == "degree" || unit == "degrees"
+        angle = deg2rad(angle);
+    elseif ~(unit == "rad" || unit == "radian" || unit == "radians")
+        error('Unknown angle unit for %s: %s. Use "rad" or "deg".', name, unit);
+    end
+    angle = wrap_to_pi_custom(angle);
+end
+
+function value = get_required_scalar(s, name)
+    if ~(isstruct(s) && isfield(s, name)) || isempty(s.(name))
+        error('custom_params.%s must be provided before running this mode.', name);
+    end
+    value = s.(name);
+    if ~isscalar(value) || ~isnumeric(value) || ~isfinite(value)
+        error('custom_params.%s must be a finite scalar.', name);
+    end
+end
+
+function vec = get_vector_param(s, name, default_value)
+    if isstruct(s) && isfield(s, name) && ~isempty(s.(name))
+        tmp = s.(name);
+        vec = tmp(:);
+    else
+        vec = default_value(:);
+    end
+    if numel(vec) ~= 3 || ~isnumeric(vec) || any(~isfinite(vec))
+        error('custom_params.%s must be a finite 3x1 vector.', name);
+    end
+end
+
+function y = wrap_to_pi_custom(x)
+    y = mod(x + pi, 2*pi) - pi;
+end
+
+function h = trim_hist_after(h, t_end)
+    if isempty(h.time)
+        return;
+    end
+    keep = h.time <= t_end + 1e-9;
+    fields = {'pos','vel','mass','time','target_pos','target_vel','rel_pos','rel_pos_lvlh','rel_vel_lvlh'};
+    for i = 1:numel(fields)
+        f = fields{i};
+        if isfield(h, f) && ~isempty(h.(f))
+            h.(f) = h.(f)(:, keep);
+        end
+    end
+    if isempty(h.time)
+        h.time_end = 0;
+    else
+        h.time_end = h.time(end);
     end
 end
 
@@ -248,38 +647,24 @@ function [X_chaser, X_target, hist] = propagate_for_duration(X_chaser, X_target,
     if nargin < 6, t_offset = 0; end
     hist = init_hist();
     elapsed = 0;
-    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
-    pre_dist = inf;
-    while elapsed < duration - 1e-9
-        [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
-        elapsed = elapsed + dt;
+    while elapsed < duration - 1e-12
+        dt_eff = min(dt, duration - elapsed);
+        [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt_eff);
+        elapsed = elapsed + dt_eff;
         hist = log_full_state(hist, X_chaser, X_target, t_offset + elapsed);
     end
-          
-    %while elapsed < duration - 60 || pre_dist > norm(X_target(1:3) - five_kilo - X_chaser(1:3))
-    %    pre_dist = norm(X_target(1:3) - five_kilo - X_chaser(1:3));
-    %    [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
-    %    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
-    %    elapsed = elapsed + dt;
-    %    hist = log_full_state(hist, X_chaser, X_target, t_offset + elapsed);
-    %end
 end
 
 function [X_chaser, X_target] = propagate_state_only(X_chaser, X_target, sys, duration, dt)
-    elapsed = 0;
-    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
-    pre_dist = inf;
-    while elapsed < duration - 1e-9
-        [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
-        elapsed = elapsed + dt;
+    if duration <= 0
+        return;
     end
-        
-    %while elapsed < duration - 60 || pre_dist > norm(X_target(1:3) - five_kilo - X_chaser(1:3))
-    %    pre_dist = norm(X_target(1:3) - five_kilo - X_chaser(1:3));
-    %    [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt);
-    %    five_kilo = X_target(1:3) / norm(X_target(1:3)) * 5000;
-    %    elapsed = elapsed + dt;
-    %end
+    elapsed = 0;
+    while elapsed < duration - 1e-12
+        dt_eff = min(dt, duration - elapsed);
+        [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt_eff);
+        elapsed = elapsed + dt_eff;
+    end
 end
 
 function [X_chaser_next, X_target_next] = rk4_step_chaser_target(X_chaser, X_target, sys, dt)

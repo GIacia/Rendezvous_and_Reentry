@@ -11,8 +11,9 @@ from scipy.optimize import root_scalar, minimize_scalar
 @dataclass
 class EarthJ2:
     mu: float = 398600.4418          # km^3/s^2
-    radius: float = 6378.1363        # km
-    J2: float = 1.08262668e-3
+    radius: float = 6378.137         # km
+    J2: float = 1.08262668e-3        
+    # J2: float = 0.0
 
 
 # ============================================================
@@ -57,7 +58,7 @@ def circular_polar_state(radius_km, u_rad, earth=EarthJ2()):
     r = radius_km * (np.cos(u_rad) * P_HAT + np.sin(u_rad) * Q_HAT)
     
     v_mag_np = np.sqrt(earth.mu / radius_km)
-    v_mag = np.sqrt(earth.mu / radius_km * (1 - earth.J2 * (earth.radius / radius_km)**2 * (3*np.cos(u_rad) - 1)))
+    v_mag = np.sqrt(earth.mu / radius_km * (1 - earth.J2 * (earth.radius / radius_km)**2 * (3*np.sin(u_rad)**2 - 1)))
     v = v_mag * (-np.sin(u_rad) * P_HAT + np.cos(u_rad) * Q_HAT)
 
     return np.concatenate([r, v])
@@ -626,6 +627,7 @@ def run_j2_polar_hohmann_rendezvous(
     h_target_km=500.0,
     h_chaser_km=300.0,
     initial_phase_angle=0.0,
+    initial_chaser_angle=0.0,
     max_wait_time_s=None,
     post_burn_duration_s=None,
     rtol=1e-10,
@@ -684,6 +686,7 @@ def run_j2_polar_hohmann_rendezvous(
 
         gamma = np.radians(gamma)
         initial_phase_angle = np.radians(initial_phase_angle)
+        initial_chaser_angle = np.radians(initial_chaser_angle)
 
     elif angle_unit.lower() != "rad":
         raise ValueError("angle_unit must be either 'rad' or 'deg'.")
@@ -707,13 +710,13 @@ def run_j2_polar_hohmann_rendezvous(
     # Initial states
     target_state_0 = circular_polar_state(
         radius_km=r_target,
-        u_rad=initial_phase_angle,
+        u_rad=initial_phase_angle + initial_chaser_angle,
         earth=earth
     )
 
     chaser_state_0 = circular_polar_state(
         radius_km=r_chaser,
-        u_rad=0.0,
+        u_rad=initial_chaser_angle,
         earth=earth
     )
 
@@ -874,6 +877,8 @@ if __name__ == "__main__":
         delta_v=None,         # default: non-J2 Hohmann first impulse
         gamma=0.0,            # pure tangential burn
         angle_unit="rad",
+        initial_phase_angle=np.pi/2,
+        initial_chaser_angle=0.0, # chaser inserting angle, clockwise direction from the north pole
         desired_rel_lvlh=[0,-5,0],
         verbose=True
     )
