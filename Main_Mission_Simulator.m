@@ -81,22 +81,29 @@ fprintf('\n[Phase 2] Starting waypoint-impulsive +R-bar approach...\n');
 % -------------------------------------------------------------------------
 % Phase 2 concept
 %   - S2:  -V-bar 5 km hold point, inherited from Phase 1 when possible.
-%   - S2 -> S3: CW/Hill-targeted free-flight arc to a +R-bar hold point.
-%   - S3 -> S4: small impulsive hops down the +R-bar corridor.
-%   - Every leg is executed as: compute LVLH delta-V -> apply impulse ->
-%     propagate the full nonlinear Env_EOM with zero continuous thrust.
+%   - S2 -> S3: one retrograde/-V-bar impulse, then free cycloidal drift.
+%       * v0 is selected from |delta_R|max = 4*v0/n.
+%       * S3 is not pre-fixed. S3 is the first point where V-bar coordinate
+%         crosses zero after the cycloidal drift starts.
+%   - S3 -> S4: short two-impulse R-bar hops. Each hop uses CW targeting for
+%     the departure impulse, nonlinear Env_EOM propagation, then a small
+%     braking impulse to hold before the next hop.
+%   - No state overwriting: all corrections are impulses + free propagation.
 % -------------------------------------------------------------------------
 p2 = struct();
 p2.dt = 1.0;                         % [s] propagation step during proximity ops
 p2.S2 = [0; -5000; 0];               % [m] -V-bar hold point after Phase 1
-p2.S3 = [500; 0; 0];                 % [m] +R-bar hold point
-p2.S4 = [30; 0; 0];                  % [m] final +R-bar approach point
+p2.S3 = [NaN; NaN; NaN];             % [m] determined by first V-bar crossing
+p2.S4_R_abs = 30;                    % [m] final stand-off distance on the same R-bar side as S3
+p2.S4 = [NaN; NaN; NaN];             % [m] determined after S3 is detected
 p2.initial_S2_tol = 50.0;            % [m] if Phase 1 is farther, insert cleanup leg to S2
-p2.arc_count = 6;                    % number of S2->S3 targeting legs
 p2.tof_initial_s2 = 1200;            % [s] cleanup transfer time to S2, only used if needed
-p2.tof_arc_total = 3600;             % [s] total time for S2->S3 arc
-p2.rbar_hops = [430 370 310 255 205 160 120 85 55 30];  % [m] +R-bar hop targets
-p2.tof_hop = 300;                    % [s] transfer time per +R-bar hop
+p2.delta_R_cycloid = 300;            % [m] maximum radial excursion magnitude for the cycloid
+p2.vbar_burn_sign = -1;              % -1 means apply the S2 impulse in the -V-bar direction
+p2.vbar_cross_tol = 1.0;             % [m] acceptable error for detecting first V-bar crossing
+p2.max_cycloid_orbits = 4.0;         % safety limit for S2->S3 free drift
+p2.rbar_hop_count = 8;               % number of S3->S4 R-bar hops
+p2.tof_hop = 300;                    % [s] transfer time per R-bar hop
 p2.capture_pos_tol = 0.25;           % [m] terminal position tolerance at S4
 p2.max_terminal_refines = 4;         % extra S4 targeting attempts if nonlinear drift remains
 p2.tof_terminal_refine = 180;        % [s] time per final retargeting leg
@@ -109,41 +116,6 @@ fprintf('   Phase 2 initial LVLH rel-pos = [%+.2f, %+.2f, %+.2f] m\n', ...
 fprintf('   Phase 2 initial LVLH rel-vel = [%+.4f, %+.4f, %+.4f] m/s\n', ...
         vrel0_lvlh(1), vrel0_lvlh(2), vrel0_lvlh(3));
 
-% Build S2 -> S3 cycloidal-like corridor waypoints in the R/V plane.
-% The shape is only a reference corridor. Each leg itself is physically flown
-% by an impulse followed by nonlinear propagation.
-u_arc = linspace(0, 1, p2.arc_count + 1);
-arc_waypoints = zeros(3, numel(u_arc));
-for ii = 1:numel(u_arc)
-    u = u_arc(ii);
-    arc_waypoints(:,ii) = [p2.S3(1) * (1 - cos(0.5*pi*u)); ...
-                           p2.S2(2) * cos(0.5*pi*u); ...
-                           0];
-end
-
-phase2_targets = [];
-phase2_tofs = [];
-phase2_names = strings(1,0);
-
-if norm(rel0_lvlh - p2.S2) > p2.initial_S2_tol
-    phase2_targets = [phase2_targets, p2.S2];
-    phase2_tofs = [phase2_tofs, p2.tof_initial_s2];
-    phase2_names(end+1) = "cleanup_to_S2";
-    fprintf('   Phase 1 endpoint is %.1f m away from S2, so a physical cleanup leg is inserted.\n', norm(rel0_lvlh - p2.S2));
-end
-
-for ii = 2:size(arc_waypoints,2)
-    phase2_targets = [phase2_targets, arc_waypoints(:,ii)];
-    phase2_tofs = [phase2_tofs, p2.tof_arc_total / p2.arc_count];
-    phase2_names(end+1) = "S2_to_S3_arc_" + string(ii-1);
-end
-
-for ii = 1:numel(p2.rbar_hops)
-    phase2_targets = [phase2_targets, [p2.rbar_hops(ii); 0; 0]];
-    phase2_tofs = [phase2_tofs, p2.tof_hop];
-    phase2_names(end+1) = "Rbar_hop_" + string(ii);
-end
-
 % Initialize Phase 2 history containers
 hist_pos = rel0_lvlh;
 hist_mass = X_chaser(14);
@@ -155,10 +127,154 @@ phase2_time = 0;
 dV_p2 = 0;
 fuel_p2 = 0;
 
-% Execute each waypoint leg
-for seg = 1:size(phase2_targets,2)
-    r_goal = phase2_targets(:,seg);
-    tof_seg = phase2_tofs(seg);
+% Keep a list of meaningful Phase 2 points for plotting.
+phase2_targets = p2.S2;
+phase2_tofs = [];
+phase2_names = strings(1,0);
+
+% -------------------------------------------------------------------------
+% 2-0. Optional cleanup to S2, then brake to make S2 a true hold point.
+% -------------------------------------------------------------------------
+if norm(rel0_lvlh - p2.S2) > p2.initial_S2_tol
+    tof_seg = p2.tof_initial_s2;
+    [r_rel, v_rel] = rel_state_lvlh_local(X_chaser, X_target);
+    n_now = target_mean_motion_local(X_target);
+    dv_lvlh = cw_delta_v_to_waypoint_local(r_rel, v_rel, p2.S2, tof_seg, n_now);
+
+    [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_lvlh, sys, p2);
+    dV_p2 = dV_p2 + norm(dv_lvlh);
+    fuel_p2 = fuel_p2 + fuel_seg;
+
+    fprintf('   cleanup_to_S2     : target [%+7.1f,%+7.1f,%+6.1f] m, TOF %5.0f s, dV %8.4f m/s\n', ...
+            p2.S2(1), p2.S2(2), p2.S2(3), tof_seg, norm(dv_lvlh));
+
+    [X_chaser, X_target, seg_hist] = propagate_pair_free_local(X_chaser, X_target, tof_seg, p2.dt, sys, phase2_time);
+    phase2_time = seg_hist.time(end);
+
+    hist_pos = [hist_pos, seg_hist.rel];
+    hist_mass = [hist_mass, seg_hist.mass];
+    hist_p2.pos = [hist_p2.pos, seg_hist.pos];
+    hist_p2.time = [hist_p2.time, seg_hist.time];
+    hist_p2.mass = [hist_p2.mass, seg_hist.mass];
+end
+
+% S2 hold trim: cancel any remaining LVLH relative velocity before the
+% cycloidal free drift. This is necessary because the 4*v0/n relation assumes
+% a clean S2 starting condition except for the deliberate -V-bar impulse.
+[r_s2, v_s2] = rel_state_lvlh_local(X_chaser, X_target);
+dv_hold_s2_lvlh = -v_s2;
+if norm(dv_hold_s2_lvlh) > 1e-6
+    [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_hold_s2_lvlh, sys, p2);
+    dV_p2 = dV_p2 + norm(dv_hold_s2_lvlh);
+    fuel_p2 = fuel_p2 + fuel_seg;
+    hist_mass(end) = X_chaser(14);
+    hist_p2.mass(end) = X_chaser(14);
+    fprintf('   S2_hold_trim      : residual rel-vel canceled, dV %8.4f m/s\n', norm(dv_hold_s2_lvlh));
+end
+
+% -------------------------------------------------------------------------
+% 2-1. S2 -> S3 natural cycloidal drift using one -V-bar impulse.
+% -------------------------------------------------------------------------
+n_now = target_mean_motion_local(X_target);
+v0_cycloid = n_now * p2.delta_R_cycloid / 4;
+dv_cycloid_lvlh = [0; p2.vbar_burn_sign * v0_cycloid; 0];
+expected_delta_R_code = 4 * dv_cycloid_lvlh(2) / n_now;
+
+[X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_cycloid_lvlh, sys, p2);
+dV_p2 = dV_p2 + norm(dv_cycloid_lvlh);
+fuel_p2 = fuel_p2 + fuel_seg;
+hist_mass(end) = X_chaser(14);
+hist_p2.mass(end) = X_chaser(14);
+
+fprintf('   S2_to_S3_cycloid  : single %+.4f m/s V-bar impulse, |delta_R|max %.1f m', ...
+        dv_cycloid_lvlh(2), p2.delta_R_cycloid);
+fprintf(' (current LVLH signed delta_R %.1f m)\n', expected_delta_R_code);
+
+% Propagate freely until the chaser first reaches the target R-bar line,
+% i.e., until V-bar coordinate crosses zero.
+max_cycloid_time = p2.max_cycloid_orbits * 2*pi / n_now;
+cycloid_elapsed = 0;
+[r_prev, ~] = rel_state_lvlh_local(X_chaser, X_target);
+vbar_prev = r_prev(2);
+initial_vbar_sign = sign(vbar_prev);
+if initial_vbar_sign == 0
+    initial_vbar_sign = -1;
+end
+crossed_rbar = false;
+
+while cycloid_elapsed < max_cycloid_time
+    [X_chaser, X_target, seg_hist] = propagate_pair_free_local(X_chaser, X_target, p2.dt, p2.dt, sys, phase2_time);
+    phase2_time = seg_hist.time(end);
+    cycloid_elapsed = cycloid_elapsed + p2.dt;
+
+    hist_pos = [hist_pos, seg_hist.rel];
+    hist_mass = [hist_mass, seg_hist.mass];
+    hist_p2.pos = [hist_p2.pos, seg_hist.pos];
+    hist_p2.time = [hist_p2.time, seg_hist.time];
+    hist_p2.mass = [hist_p2.mass, seg_hist.mass];
+
+    [r_now, v_now] = rel_state_lvlh_local(X_chaser, X_target);
+    vbar_now = r_now(2);
+
+    if abs(vbar_now) <= p2.vbar_cross_tol || sign(vbar_now) ~= initial_vbar_sign
+        crossed_rbar = true;
+        break;
+    end
+    vbar_prev = vbar_now;
+end
+
+if ~crossed_rbar
+    error('Phase 2 cycloidal drift did not reach the R-bar line within %.2f orbits. Check S2 offset, delta_R_cycloid, and sign convention.', p2.max_cycloid_orbits);
+end
+
+[r_s3, v_s3] = rel_state_lvlh_local(X_chaser, X_target);
+p2.S3 = [r_s3(1); 0; 0];
+phase2_targets = [phase2_targets, p2.S3];
+phase2_names(end+1) = "S2_to_S3_cycloid";
+phase2_tofs = [phase2_tofs, cycloid_elapsed];
+
+fprintf('      S3 detected at first V-bar crossing after %.2f min\n', cycloid_elapsed/60);
+fprintf('      S3 actual LVLH rel-pos = [%+.3f, %+.3f, %+.3f] m\n', r_s3(1), r_s3(2), r_s3(3));
+fprintf('      S3 actual LVLH rel-vel = [%+.5f, %+.5f, %+.5f] m/s\n', v_s3(1), v_s3(2), v_s3(3));
+
+% Brake at S3 before starting the controlled R-bar hop sequence. Without this,
+% the next S3->S4 hop starts with a large natural-drift velocity and can become
+% an unsafe fly-by rather than an approach.
+dv_hold_s3_lvlh = -v_s3;
+if norm(dv_hold_s3_lvlh) > 1e-6
+    [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_hold_s3_lvlh, sys, p2);
+    dV_p2 = dV_p2 + norm(dv_hold_s3_lvlh);
+    fuel_p2 = fuel_p2 + fuel_seg;
+    hist_mass(end) = X_chaser(14);
+    hist_p2.mass(end) = X_chaser(14);
+    fprintf('   S3_hold_brake     : cycloid rel-vel canceled, dV %8.4f m/s\n', norm(dv_hold_s3_lvlh));
+end
+
+% -------------------------------------------------------------------------
+% 2-2. S3 -> S4 R-bar approach.
+% -------------------------------------------------------------------------
+% Use the same signed R-bar side as the actual S3. This avoids commanding the
+% chaser to cross through the target just because of a sign-convention mismatch.
+approach_R_sign = sign(p2.S3(1));
+if approach_R_sign == 0
+    approach_R_sign = sign(expected_delta_R_code);
+end
+if approach_R_sign == 0
+    approach_R_sign = 1;
+end
+p2.S4 = [approach_R_sign * p2.S4_R_abs; 0; 0];
+
+if abs(p2.S3(1)) <= abs(p2.S4(1))
+    warning('S3 radial distance %.2f m is already inside or near S4 %.2f m. Skipping R-bar hops and using terminal refine only.', p2.S3(1), p2.S4(1));
+    rbar_hops = p2.S4(1);
+else
+    rbar_hops = linspace(p2.S3(1), p2.S4(1), p2.rbar_hop_count + 1);
+    rbar_hops = rbar_hops(2:end);
+end
+
+for ii = 1:numel(rbar_hops)
+    r_goal = [rbar_hops(ii); 0; 0];
+    tof_seg = p2.tof_hop;
 
     [r_rel, v_rel] = rel_state_lvlh_local(X_chaser, X_target);
     n_now = target_mean_motion_local(X_target);
@@ -168,8 +284,8 @@ for seg = 1:size(phase2_targets,2)
     dV_p2 = dV_p2 + norm(dv_lvlh);
     fuel_p2 = fuel_p2 + fuel_seg;
 
-    fprintf('   %-18s: target [%+7.1f,%+7.1f,%+6.1f] m, TOF %5.0f s, dV %8.4f m/s\n', ...
-            char(phase2_names(seg)), r_goal(1), r_goal(2), r_goal(3), tof_seg, norm(dv_lvlh));
+    fprintf('   Rbar_hop_%02d      : target [%+7.1f,%+7.1f,%+6.1f] m, TOF %5.0f s, depart dV %8.4f m/s\n', ...
+            ii, r_goal(1), r_goal(2), r_goal(3), tof_seg, norm(dv_lvlh));
 
     [X_chaser, X_target, seg_hist] = propagate_pair_free_local(X_chaser, X_target, tof_seg, p2.dt, sys, phase2_time);
     phase2_time = seg_hist.time(end);
@@ -181,7 +297,23 @@ for seg = 1:size(phase2_targets,2)
     hist_p2.mass = [hist_p2.mass, seg_hist.mass];
 
     [r_arrive, v_arrive] = rel_state_lvlh_local(X_chaser, X_target);
-    fprintf('      arrival error: pos %.3f m, rel-vel %.4f m/s\n', norm(r_arrive - r_goal), norm(v_arrive));
+
+    % Make each hop a real hold point by braking the residual relative velocity.
+    % This is more physical/safe than only doing one final brake at S4.
+    dv_brake_lvlh = -v_arrive;
+    [X_chaser, fuel_brake] = apply_impulse_lvlh_local(X_chaser, X_target, dv_brake_lvlh, sys, p2);
+    dV_p2 = dV_p2 + norm(dv_brake_lvlh);
+    fuel_p2 = fuel_p2 + fuel_brake;
+    hist_mass(end) = X_chaser(14);
+    hist_p2.mass(end) = X_chaser(14);
+
+    phase2_targets = [phase2_targets, r_goal];
+    phase2_tofs = [phase2_tofs, tof_seg];
+    phase2_names(end+1) = "Rbar_hop_" + string(ii);
+
+    [r_hold, v_hold] = rel_state_lvlh_local(X_chaser, X_target);
+    fprintf('      arrival error: pos %.3f m, brake dV %.4f m/s, post-brake rel-vel %.5f m/s\n', ...
+            norm(r_hold - r_goal), norm(dv_brake_lvlh), norm(v_hold));
 end
 
 % Nonlinear/J2 residual cleanup at S4. This is still done by impulses and
@@ -228,7 +360,7 @@ fprintf('   Phase 2 final LVLH rel-vel = [%+.5f, %+.5f, %+.5f] m/s\n', v_final(1
 fprintf('   Phase 2 total dV: %.4f m/s, fuel: %.4f kg, elapsed: %.2f min\n', dV_p2, fuel_p2, phase2_time/60);
 
 m_current = X_chaser(14);
-Budget = [Budget; {"Phase 2: Waypoint +R-bar", dV_p2, fuel_p2, m_current}];
+Budget = [Budget; {"Phase 2: Cycloid + R-bar", dV_p2, fuel_p2, m_current}];
 
 %% 4. Phase 3: Re-entry (500 km -> 200 km)
 fprintf('\n[Phase 3] 3-DOF 재진입 시뮬레이션 시작 (J2 섭동 및 노이즈 역추진)...\n');
