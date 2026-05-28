@@ -98,7 +98,7 @@ p2.S4_R_abs = 30;                    % [m] final stand-off distance on the same 
 p2.S4 = [NaN; NaN; NaN];             % [m] determined after S3 is detected
 p2.initial_S2_tol = 50.0;            % [m] if Phase 1 is farther, insert cleanup leg to S2
 p2.tof_initial_s2 = 1200;            % [s] cleanup transfer time to S2, only used if needed
-p2.delta_R_cycloid = 300;            % [m] maximum radial excursion magnitude for the cycloid
+p2.delta_R_cycloid = 400;            % [m] maximum radial excursion magnitude for the cycloid
 p2.vbar_burn_sign = -1;              % -1 means apply the S2 impulse in the -V-bar direction
 p2.vbar_cross_tol = 1.0;             % [m] acceptable error for detecting first V-bar crossing
 p2.max_cycloid_orbits = 4.0;         % safety limit for S2->S3 free drift
@@ -369,14 +369,42 @@ fprintf('\n[Phase 3] 3-DOF 재진입 시뮬레이션 시작 (J2 섭동 및 노�
 reentry_mode = "HOHMANN"; 
 fprintf('   선택된 기동 방식: %s\n', reentry_mode);
 
-target_reentry_r = sys.Re + sys.h_reentry;
+% target_reentry_r = sys.Re + sys.h_reentry;
+
+% 120 km 고도에서 원하는 flight_path_angle을 얻기 위한 파라미터 계산
+a_tmp = norm(X_chaser(1:3));
+c_tmp = sys.Re + 120000;
+gamma_tmp = sys.reentry_flight_path_angle;
+phi = 2 * atan(a_tmp / (a_tmp - c_tmp) * tan(gamma_tmp));
+e_tmp = sin(gamma_tmp) / (sin(phi) * cos(gamma_tmp) - cos(phi) * sin(gamma_tmp));
+b_tmp = (1 - e_tmp) / (1 + e_tmp) * a_tmp;
+target_reentry_r = b_tmp;
 
 % Phase 2 Berthing 직후의 X_chaser 상태를 그대로 입력하여 하강
 [X_chaser, dV_p3, fuel_p3, hist_p3, X_target] = Phasing_Propagator(sys, X_chaser, target_reentry_r, reentry_mode, custom_params, X_target, 3);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
-fprintf('   도달 고도: %.2f km (목표: 200.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
+% fprintf('   도달 고도: %.2f km (목표: 200.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
+
+% 120 km에 가장 가까운 history 지점에서 flight path angle 계산
+target_alt_fpa = 120e3;  % [m]
+
+alt_hist_p3 = vecnorm(hist_p3.pos, 2, 1) - sys.Re;
+[~, idx_120] = min(abs(alt_hist_p3 - target_alt_fpa));
+
+r_120 = hist_p3.pos(:, idx_120);
+v_120 = hist_p3.vel(:, idx_120);
+
+rhat_120 = r_120 / norm(r_120);
+v_radial_120 = dot(v_120, rhat_120);                         % +면 상승, -면 하강
+v_horizontal_120 = norm(v_120 - v_radial_120 * rhat_120);     % local horizontal 성분
+
+fpa_120_deg = rad2deg(atan2(v_radial_120, v_horizontal_120)); % signed FPA
+below_horizon_120_deg = -fpa_120_deg;                         % 하강이면 양수
+
+fprintf('   120 km 근접 지점: 실제 고도 %.2f km, FPA %.3f deg, 수평선 아래 각도 %.3f deg\n', ...
+        alt_hist_p3(idx_120)/1000, fpa_120_deg, below_horizon_120_deg);
 
 %% 5. Summary and Output
 disp(' ');

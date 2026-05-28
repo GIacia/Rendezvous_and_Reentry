@@ -16,6 +16,7 @@ function sys = Mission_Config()
     sys.h_insert = 300e3;      % 300 km
     sys.h_wait   = 495e3;      % 495 km (Waiting Point)
     sys.h_reentry = 200e3;     % 200 km
+    sys.reentry_flight_path_angle = 4 * pi/180;        % 대기권(120km) 진입 경로
     sys.inc = pi/2;            % 극궤도 (90 deg)
     sys.phase = pi * (1 - ((sys.Re + (sys.h_insert + sys.h_wait) * 500)/(sys.Re + sys.h_wait * 1000))^1.5); % 호만 전이 phase angle, ohne J2 perturbation
     
