@@ -61,7 +61,7 @@ phasing_mode = "CUSTOM_IMPULSE";
 [X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, 1);
 m_current = X_chaser(14);
 
-Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
+% Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
 
 h_vec_p1 = cross(X_target(1:3), X_target(4:6));
 i_u_p1 = X_target(1:3)/norm(X_target(1:3));
@@ -128,7 +128,8 @@ dV_p2 = 0;
 fuel_p2 = 0;
 
 % Keep a list of meaningful Phase 2 points for plotting.
-phase2_targets = p2.S2;
+phase2_targets = [];
+phase2_target_times = [];      % [s] elapsed time from Phase 2 start
 phase2_tofs = [];
 phase2_names = strings(1,0);
 
@@ -142,7 +143,8 @@ if norm(rel0_lvlh - p2.S2) > p2.initial_S2_tol
     dv_lvlh = cw_delta_v_to_waypoint_local(r_rel, v_rel, p2.S2, tof_seg, n_now);
 
     [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_lvlh, sys, p2);
-    dV_p2 = dV_p2 + norm(dv_lvlh);
+%    dV_p2 = dV_p2 + norm(dv_lvlh);
+    dV_p1 = dV_p1 + norm(dv_lvlh);
     fuel_p2 = fuel_p2 + fuel_seg;
 
     fprintf('   cleanup_to_S2     : target [%+7.1f,%+7.1f,%+6.1f] m, TOF %5.0f s, dV %8.4f m/s\n', ...
@@ -165,12 +167,18 @@ end
 dv_hold_s2_lvlh = -v_s2;
 if norm(dv_hold_s2_lvlh) > 1e-6
     [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_hold_s2_lvlh, sys, p2);
-    dV_p2 = dV_p2 + norm(dv_hold_s2_lvlh);
+%    dV_p2 = dV_p2 + norm(dv_hold_s2_lvlh);
+    dV_p1 = dV_p1 + norm(dv_hold_s2_lvlh);
     fuel_p2 = fuel_p2 + fuel_seg;
     hist_mass(end) = X_chaser(14);
     hist_p2.mass(end) = X_chaser(14);
     fprintf('   S2_hold_trim      : residual rel-vel canceled, dV %8.4f m/s\n', norm(dv_hold_s2_lvlh));
 end
+
+% Record S2 waypoint time after optional cleanup and hold trim.
+phase2_targets = [phase2_targets, p2.S2];
+phase2_target_times = [phase2_target_times, phase2_time];
+phase2_names(end+1) = "S2";
 
 % -------------------------------------------------------------------------
 % 2-1. S2 -> S3 natural cycloidal drift using one -V-bar impulse.
@@ -181,10 +189,15 @@ dv_cycloid_lvlh = [0; p2.vbar_burn_sign * v0_cycloid; 0];
 expected_delta_R_code = 4 * dv_cycloid_lvlh(2) / n_now;
 
 [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_cycloid_lvlh, sys, p2);
-dV_p2 = dV_p2 + norm(dv_cycloid_lvlh);
+% dV_p2 = dV_p2 + norm(dv_cycloid_lvlh);
+dV_p1 = dV_p1 + norm(dv_cycloid_lvlh);
 fuel_p2 = fuel_p2 + fuel_seg;
 hist_mass(end) = X_chaser(14);
 hist_p2.mass(end) = X_chaser(14);
+
+% temporarily here,, to include the Hohmann circularization maneuver effect
+% to Phase 1
+Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
 
 fprintf('   S2_to_S3_cycloid  : single %+.4f m/s V-bar impulse, |delta_R|max %.1f m', ...
         dv_cycloid_lvlh(2), p2.delta_R_cycloid);
@@ -230,7 +243,8 @@ end
 [r_s3, v_s3] = rel_state_lvlh_local(X_chaser, X_target);
 p2.S3 = [r_s3(1); 0; 0];
 phase2_targets = [phase2_targets, p2.S3];
-phase2_names(end+1) = "S2_to_S3_cycloid";
+phase2_target_times = [phase2_target_times, phase2_time];
+phase2_names(end+1) = "S3";
 phase2_tofs = [phase2_tofs, cycloid_elapsed];
 
 fprintf('      S3 detected at first V-bar crossing after %.2f min\n', cycloid_elapsed/60);
@@ -308,8 +322,14 @@ for ii = 1:numel(rbar_hops)
     hist_p2.mass(end) = X_chaser(14);
 
     phase2_targets = [phase2_targets, r_goal];
+    phase2_target_times = [phase2_target_times, phase2_time];
     phase2_tofs = [phase2_tofs, tof_seg];
-    phase2_names(end+1) = "Rbar_hop_" + string(ii);
+
+    if ii == numel(rbar_hops)
+        phase2_names(end+1) = "S4";
+    else
+        phase2_names(end+1) = "WP" + string(ii);
+    end
 
     [r_hold, v_hold] = rel_state_lvlh_local(X_chaser, X_target);
     fprintf('      arrival error: pos %.3f m, brake dV %.4f m/s, post-brake rel-vel %.5f m/s\n', ...
@@ -385,7 +405,7 @@ target_reentry_r = b_tmp;
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
-% fprintf('   도달 고도: %.2f km (목표: 200.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
+fprintf('   도달 고도: %.2f km (목표: 200.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
 
 % 120 km에 가장 가까운 history 지점에서 flight path angle 계산
 target_alt_fpa = 120e3;  % [m]
@@ -417,11 +437,30 @@ fprintf('Remaining Dry Mass:     %.2f kg\n', m_current);
 % Plotting R-bar trajectory
 figure('Name','Proximity Operations','Color','w');
 plot(hist_pos(2,:), hist_pos(1,:), 'b-', 'LineWidth', 2); hold on;
-plot(phase2_targets(2,:), phase2_targets(1,:), 'ko', 'MarkerSize', 4);
+plot(phase2_targets(2,:), phase2_targets(1,:), 'ko', 'MarkerSize', 5, 'MarkerFaceColor', 'w');
 plot(0,0,'r^','MarkerSize',10,'MarkerFaceColor','r');
-grid on; xlabel('V-bar (m)'); ylabel('R-bar (m)');
+
+% Waypoint time labels
+for kk = 1:size(phase2_targets, 2)
+    x_wp = phase2_targets(2, kk);   % V-bar
+    y_wp = phase2_targets(1, kk);   % R-bar
+
+    label_txt = sprintf('%s, %.1f min', ...
+        char(phase2_names(kk)), phase2_target_times(kk)/60);
+
+    text(x_wp, y_wp, ['  ' label_txt], ...
+        'FontSize', 8, ...
+        'VerticalAlignment', 'bottom', ...
+        'HorizontalAlignment', 'left', ...
+        'BackgroundColor', 'w', ...
+        'Margin', 1);
+end
+
+grid on;
+xlabel('V-bar (m)');
+ylabel('R-bar (m)');
 title('R-bar Approach Trajectory (LVLH)');
-legend('Chaser Trajectory', 'Commanded Waypoints', 'Target');
+legend('Chaser Trajectory', 'Commanded Waypoints', 'Target', 'Location', 'best');
 set(gca, 'XDir', 'reverse'); % Flight direction to the left
 
 %% 6. 종합 임무 프로파일 시각화 (Mission Profile Visualization)
