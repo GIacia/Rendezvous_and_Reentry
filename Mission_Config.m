@@ -16,7 +16,7 @@ function sys = Mission_Config()
     sys.h_insert = 300e3;      % 300 km
     sys.h_wait   = 495e3;      % 495 km (Waiting Point)
     sys.h_reentry = 200e3;     % 200 km
-    sys.reentry_flight_path_angle = 4 * pi/180;        % 대기권(120km) 진입 경로
+    sys.reentry_flight_path_angle = 4 * pi/180;        % 대기권(120km) 진입 비행경로각 Flight Path Angle 
     sys.inc = pi/2;            % 극궤도 (90 deg)
     sys.phase = pi * (1 - ((sys.Re + (sys.h_insert + sys.h_wait) * 500)/(sys.Re + sys.h_wait * 1000))^1.5); % 호만 전이 phase angle, ohne J2 perturbation
     
@@ -25,7 +25,7 @@ function sys = Mission_Config()
     sys.Thrust_Impulsive = 300;% 고추력기 [N]
     sys.Thrust_Cont = 1;       % 저추력기 [N]
     
-    % 노이즈 및 불확실성 모델 (Gaussian Noise 1-sigma)
+    % 노이즈 및 불확실성 모델 (Gaussian Noise 1-sigma), 잠정적 폐기
     sys.noise.pos = 2.0;       % 위치 센서 노이즈 [m]
     sys.noise.vel = 0.05;      % 속도 센서 노이즈 [m/s]
     sys.noise.att = 0.001;     % 자세(Quaternion) 노이즈
