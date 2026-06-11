@@ -389,6 +389,16 @@ if strlength(reentry_mode_env) > 0
 end
 fprintf('   selected Phase 3 mode: %s\n', reentry_mode);
 
+% Set true to charge propellant for the final 200 km -> 120 km injection in
+% R_BAR_200_FPA mode. The default keeps this injection fuel-excluded.
+charge_final_reentry_fuel = false;
+charge_final_reentry_fuel_env = getenv('RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL');
+if strlength(charge_final_reentry_fuel_env) > 0
+    charge_final_reentry_fuel = parse_bool_setting_local(charge_final_reentry_fuel_env);
+end
+custom_params.charge_final_reentry_fuel = charge_final_reentry_fuel;
+fprintf('   charge final 200 km -> 120 km injection fuel: %s\n', bool_label_local(charge_final_reentry_fuel));
+
 reentry_info = struct();
 
 if reentry_mode == "HOHMANN"
@@ -406,8 +416,13 @@ elseif reentry_mode == "R_BAR_200_FPA"
         run_phase3_rbar_200_fpa_local(sys, X_chaser, X_target, custom_params);
 
     fprintf('   final altitude: %.2f km\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
-    fprintf('   final 200 km -> 120 km injection dV %.4f m/s is included in Phase 3 dV, but its fuel is excluded.\n', ...
-            reentry_info.final_injection_dV);
+    if reentry_info.final_injection_fuel_charged
+        fprintf('   final 200 km -> 120 km injection dV %.4f m/s and fuel %.4f kg are included in Phase 3 budget.\n', ...
+                reentry_info.final_injection_dV, reentry_info.final_injection_fuel);
+    else
+        fprintf('   final 200 km -> 120 km injection dV %.4f m/s is included in Phase 3 dV, but its fuel is excluded.\n', ...
+                reentry_info.final_injection_dV);
+    end
 
 else
     error('Unknown Phase 3 reentry_mode: %s. Use "HOHMANN" or "R_BAR_200_FPA".', reentry_mode);
@@ -730,14 +745,19 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_
     [target_reentry_r, fpa_calc] = compute_reentry_target_radius_local(norm(X_chaser(1:3)), sys);
     info.fpa_calc = fpa_calc;
     info.reentry_target_radius = target_reentry_r;
+    charge_final_fuel = get_phase3_bool_param_local(custom_params, 'charge_final_reentry_fuel', false);
 
-    fprintf('   R_BAR_200_FPA leg 3: fuel-excluded injection toward 120 km / %.2f deg FPA...\n', ...
-            rad2deg(sys.reentry_flight_path_angle));
-    [X_chaser, dV_entry, fuel_equiv] = apply_reentry_departure_impulse_no_fuel_local(X_chaser, target_reentry_r, sys);
+    fprintf('   R_BAR_200_FPA leg 3: injection toward 120 km / %.2f deg FPA (fuel update: %s)...\n', ...
+            rad2deg(sys.reentry_flight_path_angle), bool_label_local(charge_final_fuel));
+    [X_chaser, dV_entry, fuel_entry] = apply_reentry_departure_impulse_local(X_chaser, target_reentry_r, sys, charge_final_fuel);
     dV_used = dV_used + dV_entry;
+    if charge_final_fuel
+        fuel_used = fuel_used + fuel_entry;
+    end
 
     info.final_injection_dV = dV_entry;
-    info.final_injection_fuel_equivalent = fuel_equiv;
+    info.final_injection_fuel = fuel_entry;
+    info.final_injection_fuel_charged = charge_final_fuel;
 
     hist = log_phase3_state_local(hist, X_chaser, X_target, hist.time_end);
 
@@ -753,8 +773,13 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_
     hist = append_phase3_hist_local(hist, hist_entry);
     info.reentry_coast_time = coast_time;
 
-    fprintf('      120 km interface reached after %.2f min; fuel-equivalent %.4f kg was not charged.\n', ...
-            coast_time/60, fuel_equiv);
+    if charge_final_fuel
+        fprintf('      120 km interface reached after %.2f min; final-injection fuel charged: %.4f kg.\n', ...
+                coast_time/60, fuel_entry);
+    else
+        fprintf('      120 km interface reached after %.2f min; fuel-equivalent %.4f kg was not charged.\n', ...
+                coast_time/60, fuel_entry);
+    end
 end
 
 function [target_r, details] = compute_reentry_target_radius_local(start_r, sys)
@@ -783,7 +808,7 @@ function [target_r, details] = compute_reentry_target_radius_local(start_r, sys)
     details.target_radius = target_r;
 end
 
-function [X_chaser, dV_mag, fuel_equiv] = apply_reentry_departure_impulse_no_fuel_local(X_chaser, target_r, sys)
+function [X_chaser, dV_mag, fuel_used] = apply_reentry_departure_impulse_local(X_chaser, target_r, sys, charge_fuel)
     r_current = norm(X_chaser(1:3));
     v_current = norm(X_chaser(4:6));
     a_trans = 0.5 * (r_current + target_r);
@@ -798,7 +823,13 @@ function [X_chaser, dV_mag, fuel_equiv] = apply_reentry_departure_impulse_no_fue
     dV_mag = abs(dV_cmd);
 
     X_chaser(4:6) = X_chaser(4:6) + dV_cmd * X_chaser(4:6) / v_current;
-    fuel_equiv = X_chaser(14) * (1 - exp(-dV_mag / (sys.Isp * sys.g0)));
+
+    m0 = X_chaser(14);
+    m1 = m0 * exp(-dV_mag / (sys.Isp * sys.g0));
+    fuel_used = m0 - m1;
+    if charge_fuel
+        X_chaser(14) = m1;
+    end
 end
 
 function [X_chaser, X_target, hist, elapsed, rel_lvlh] = propagate_until_rbar_below_local(X_chaser, X_target, sys, max_wait, dt, vbar_tol, radial_tol, t0)
@@ -977,6 +1008,43 @@ function value = get_phase3_param_local(s, name, default_value)
         value = s.(name);
     else
         value = default_value;
+    end
+end
+
+function value = get_phase3_bool_param_local(s, name, default_value)
+    if isstruct(s) && isfield(s, name) && ~isempty(s.(name))
+        value = parse_bool_setting_local(s.(name));
+    else
+        value = default_value;
+    end
+end
+
+function value = parse_bool_setting_local(raw_value)
+    if islogical(raw_value)
+        value = raw_value;
+        return;
+    end
+
+    if isnumeric(raw_value) && isscalar(raw_value)
+        value = raw_value ~= 0;
+        return;
+    end
+
+    text_value = lower(strtrim(string(raw_value)));
+    if any(text_value == ["1", "true", "yes", "y", "on"])
+        value = true;
+    elseif any(text_value == ["0", "false", "no", "n", "off"])
+        value = false;
+    else
+        error('Boolean setting must be true/false, on/off, yes/no, or 1/0. Got: %s', string(raw_value));
+    end
+end
+
+function label = bool_label_local(value)
+    if value
+        label = "on";
+    else
+        label = "off";
     end
 end
 

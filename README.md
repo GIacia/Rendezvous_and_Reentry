@@ -59,10 +59,17 @@ Main_Mission_Simulator
 
 The active MATLAB path is intended to use standard MATLAB numerical functionality. The Python helper scripts require the packages listed in `requirements.txt`.
 
-Phase 3 defaults to the legacy `HOHMANN` mode. To try the R-bar aligned 200 km setup without editing the file, run:
+Phase 3 is selected by `reentry_mode` in `Main_Mission_Simulator.m`. You can override it without editing the file:
 
 ```matlab
 setenv('RENDEZVOUS_PHASE3_MODE','R_BAR_200_FPA')
+Main_Mission_Simulator
+```
+
+For `R_BAR_200_FPA`, the final 200 km to 120 km injection fuel update is controlled independently. The default in the script is `off`; to include that burn in the propellant and remaining-mass budget, run:
+
+```matlab
+setenv('RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL','on')
 Main_Mission_Simulator
 ```
 
@@ -106,7 +113,7 @@ Phase 3 is selected with `reentry_mode` in `Main_Mission_Simulator.m`.
 Current modes:
 
 - `HOHMANN`: preserves the previous direct FPA-targeted Hohmann-style descent. It computes the radius needed to pass near 120 km at the configured 4 deg flight-path angle, then sends that target radius to `Phasing_Propagator.m`.
-- `R_BAR_200_FPA`: first lowers from the station orbit region to a 200 km parking orbit, waits until the vehicle is below the target on the target R-bar, then performs a final 200 km to 120 km injection using the same FPA geometry. The final injection delta-V is reported, but its propellant is intentionally excluded from the fuel budget.
+- `R_BAR_200_FPA`: first lowers from the station orbit region to a 200 km parking orbit, waits until the vehicle is below the target on the target R-bar, then performs a final 200 km to 120 km injection using the same FPA geometry. The final injection delta-V is always reported; its propellant can be included or excluded with `charge_final_reentry_fuel` or `RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL`.
 
 Both modes still use the same post-run check of the actual flight-path angle near 120 km altitude.
 
