@@ -1,52 +1,51 @@
-# Unmanned Rendezvous Mission 6-DOF Simulator
+# Unmanned Rendezvous Mission Simulator
 
 MATLAB-based end-to-end rendezvous mission simulator for an unmanned chaser spacecraft operating in Earth orbit. The current codebase combines:
 
-- **Phase 1**: 3-DOF phasing / homing with impulsive maneuvers and **J2-aware orbital propagation**
-- **Phase 2**: 6-DOF proximity operations with **LVLH relative navigation**, **R-bar approach guidance**, and **attitude dynamics**
-- **Phase 3**: 3-DOF de-orbit / re-entry descent to a lower orbit
+- **Phase 1**: 3-DOF phasing / homing with impulsive maneuvers and J2-aware orbital propagation
+- **Phase 2**: LVLH waypoint-impulse proximity operations with cycloidal drift, R-bar hops, nonlinear J2 propagation, and mass bookkeeping
+- **Phase 3**: selectable 3-DOF de-orbit / re-entry modes, including direct FPA-targeted descent and a 200 km R-bar-aligned re-entry setup
 
-The project is designed as a mission-level simulation framework rather than a single guidance law demo. It is especially useful for studying how **orbit transfer logic**, **target-relative geometry**, **J2 perturbation**, **mass depletion**, and **proximity-operation control** interact in one continuous workflow.
-
----
+The project is designed as a mission-level simulation framework rather than a single guidance-law demo. It is useful for studying how orbit transfer logic, target-relative geometry, J2 perturbation, mass depletion, and proximity-operation sequencing interact in one continuous workflow.
 
 ## Current Scope
 
 This repository currently models:
 
-- Earth central gravity + **J2 perturbation**
+- Earth central gravity + J2 perturbation
 - A target spacecraft and a chaser spacecraft
-- Hohmann-based phase planning with **target co-propagation**
-- A **J2-aware wait-time search** before departure so the transfer arrives closer to a desired LVLH capture point
-- 6-DOF chaser translational + rotational dynamics during proximity operations
-- Simple thrust uncertainty / noise injection
-- Mission-level **delta-V and propellant budget tracking**
-- Visualization of trajectory, altitude history, and mass depletion
-
----
+- Hohmann-based phase planning with target co-propagation
+- A J2-aware wait-time search before departure so the transfer arrives closer to a desired LVLH capture point
+- Custom impulse phasing driven by externally tuned phase angle, delta-V, and gamma parameters
+- LVLH waypoint-impulse proximity operations with cleanup, hold trims, cycloidal drift, R-bar hops, braking impulses, and mass depletion
+- selectable Phase 3 re-entry logic through `reentry_mode`
+- Simple thrust uncertainty / noise injection in selected phasing modes
+- Mission-level delta-V and propellant budget tracking
+- Visualization of trajectory, altitude history, proximity trajectory, and mass depletion
 
 ## Repository Structure
 
 ```text
 .
-├── Main_Mission_Simulator.m      % Main entry point for the full mission
-├── Mission_Config.m              % Physical constants, vehicle data, mission parameters
-├── Phasing_Propagator.m          % 3-DOF phasing / Hohmann / Lambert propagation logic
-├── GNC_Controller.m              % LVLH relative guidance and control for proximity ops
-├── Env_EOM.m                     % Environment and 6-DOF equations of motion
-├── docs/
-│   ├── ARCHITECTURE.md
-│   └── ASSUMPTIONS_AND_LIMITATIONS.md
-├── results/
-│   └── README.md
-├── examples/
-│   └── README.md
-└── .gitignore
+|-- Main_Mission_Simulator.m      % Main entry point for the full mission
+|-- Mission_Config.m              % Physical constants, vehicle data, mission parameters
+|-- Phasing_Propagator.m          % 3-DOF phasing / Hohmann / Lambert / custom impulse logic
+|-- Env_EOM.m                     % Environment and 3-DOF/6-DOF equations of motion
+|-- J2PolarHohmann.py             % Python J2 polar Hohmann propagation study
+|-- J2PolarHohmannShooting.py     % Python shooting / constrained optimization helper
+|-- docs/
+|   |-- ARCHITECTURE.md
+|   `-- ASSUMPTIONS_AND_LIMITATIONS.md
+|-- examples/
+|   `-- README.md
+|-- results/
+|   `-- README.md
+|-- legacy/                       % Older MATLAB versions, including GNC_Controller.m
+|-- requirements.txt              % Python helper dependencies
+`-- .gitignore
 ```
 
-The current `.m` files are intentionally kept at the repository root so that the existing MATLAB execution flow does **not** break.
-
----
+The active MATLAB `.m` files are intentionally kept at the repository root so that the existing MATLAB execution flow does not break.
 
 ## How to Run
 
@@ -58,47 +57,63 @@ The current `.m` files are intentionally kept at the repository root so that the
 Main_Mission_Simulator
 ```
 
-No external toolbox dependencies are intentionally assumed beyond standard MATLAB numerical functionality.
+The active MATLAB path is intended to use standard MATLAB numerical functionality. The Python helper scripts require the packages listed in `requirements.txt`.
 
----
+Phase 3 defaults to the legacy `HOHMANN` mode. To try the R-bar aligned 200 km setup without editing the file, run:
+
+```matlab
+setenv('RENDEZVOUS_PHASE3_MODE','R_BAR_200_FPA')
+Main_Mission_Simulator
+```
 
 ## Simulation Flow
 
-### Phase 1 — Phasing & Homing
+### Phase 1: Phasing & Homing
 
 `Phasing_Propagator.m` performs the pre-rendezvous orbital transfer.
 
-In the current Hohmann mode, the logic is:
+The active root script currently uses `CUSTOM_IMPULSE` mode, where the departure phase angle, burn magnitude, and burn flight-path tilt are supplied through `custom_params`. Those values can be generated or refined using the Python shooting helpers.
 
-1. Co-propagate the **chaser** and **target** under J2
-2. Search for a departure wait time that best aligns the transfer arrival with a desired LVLH capture point
-3. Execute the first Hohmann impulse
-4. Numerically propagate the transfer arc
-5. Circularize at the destination altitude
+In `HOHMANN` mode, the logic is:
 
-This is more physically meaningful than immediately burning at `t = 0`, because it includes target motion during the waiting phase.
+1. Co-propagate the chaser and target under J2.
+2. Search for a departure wait time that best aligns the transfer arrival with a desired LVLH capture point.
+3. Execute the first Hohmann impulse.
+4. Numerically propagate the transfer arc.
+5. Circularize at the destination altitude.
 
-### Phase 2 — Proximity Operations
+### Phase 2: Proximity Operations
 
-`GNC_Controller.m` computes the commanded force/torque for R-bar closing and final berthing in the target-centered LVLH frame.
+The current root-level mission script performs proximity operations directly in `Main_Mission_Simulator.m`.
 
-The controller currently includes:
+The active Phase 2 implementation includes:
 
 - LVLH relative position / velocity computation
-- Environmental feedforward compensation
-- PD-like translational guidance
-- Mode switching between `R-BAR_CLOSING` and `FINAL_BERTHING`
-- Simple body torque damping for attitude stabilization
+- optional cleanup to the S2 -V-bar hold point
+- S2 hold trim to cancel residual relative velocity
+- one S2-to-S3 V-bar impulse followed by natural cycloidal drift
+- S3 detection at the first V-bar crossing
+- CW/Hill waypoint targeting for S3-to-S4 R-bar hops
+- nonlinear free propagation with `Env_EOM.m`
+- braking impulses and propellant bookkeeping at hold points
 
-### Phase 3 — Re-entry / Descent
+Older continuous-force `GNC_Controller.m` implementations are preserved under `legacy/`, but they are not called by the current root-level mission script.
 
-The same phasing propagator is reused to lower the orbit from the target-altitude region toward the re-entry interface altitude.
+### Phase 3: Re-entry / Descent
 
----
+Phase 3 is selected with `reentry_mode` in `Main_Mission_Simulator.m`.
+
+Current modes:
+
+- `HOHMANN`: preserves the previous direct FPA-targeted Hohmann-style descent. It computes the radius needed to pass near 120 km at the configured 4 deg flight-path angle, then sends that target radius to `Phasing_Propagator.m`.
+- `R_BAR_200_FPA`: first lowers from the station orbit region to a 200 km parking orbit, waits until the vehicle is below the target on the target R-bar, then performs a final 200 km to 120 km injection using the same FPA geometry. The final injection delta-V is reported, but its propellant is intentionally excluded from the fuel budget.
+
+Both modes still use the same post-run check of the actual flight-path angle near 120 km altitude.
 
 ## Main Files
 
 ### `Main_Mission_Simulator.m`
+
 Orchestrates the complete mission:
 
 - initializes spacecraft states
@@ -107,6 +122,7 @@ Orchestrates the complete mission:
 - generates mission plots
 
 ### `Mission_Config.m`
+
 Contains mission constants and tuning parameters such as:
 
 - Earth constants (`mu`, `Re`, `J2`, `g0`)
@@ -117,90 +133,61 @@ Contains mission constants and tuning parameters such as:
 - nominal capture-point settings
 
 ### `Phasing_Propagator.m`
+
 Handles impulsive orbital transfer logic for:
 
-- **Hohmann transfer**
-- **Lambert transfer**
+- Hohmann transfer
+- Lambert transfer
+- custom impulse phase targeting
 - target co-propagation
 - history logging of chaser/target states
 - J2-aware wait-time targeting for capture-point arrival
 
-### `GNC_Controller.m`
-Implements the proximity-operations guidance and control logic in LVLH.
-
 ### `Env_EOM.m`
+
 Defines the equations of motion used for translational and rotational propagation.
 
----
+### Python Helpers
+
+`J2PolarHohmann.py` and `J2PolarHohmannShooting.py` provide a SciPy-based side workflow for studying and tuning J2 polar Hohmann-like rendezvous parameters. They are not required for a normal MATLAB run, but they explain where the active `CUSTOM_IMPULSE` values can come from.
 
 ## Model Assumptions
 
-This repository is best interpreted as a **research / educational simulator** rather than a flight-grade GNC tool.
+This repository is best interpreted as a research / educational simulator rather than a flight-grade GNC tool.
 
 Important assumptions include:
 
 - Earth gravity + J2 only
-- no atmospheric drag, SRP, third-body gravity, or Earth rotation effects in the orbital propagator
-- simplified impulsive burns in the phasing stage
+- no atmospheric drag, SRP, third-body gravity, or full Earth-fixed frame effects in the orbital propagator
+- simplified impulsive burns in the phasing and proximity stages
 - simplified thrust and sensor error models
 - simplified capture / berthing logic
-- no high-fidelity actuator or navigation filter model
+- no high-fidelity actuator, navigation filter, abort logic, or docking contact model
 
-A more detailed discussion is provided in [`docs/ASSUMPTIONS_AND_LIMITATIONS.md`](docs/ASSUMPTIONS_AND_LIMITATIONS.md).
-
----
+A more detailed discussion is provided in `docs/ASSUMPTIONS_AND_LIMITATIONS.md`.
 
 ## Current Known Limitations
 
-At the current development stage, the code is useful for **mission logic prototyping** and **relative-motion debugging**, but not yet for high-fidelity mission reconstruction.
+At the current development stage, the code is useful for mission logic prototyping and relative-motion debugging, but not yet for high-fidelity mission reconstruction.
 
 Examples of current limitations:
 
-- Hohmann targeting is still a **best-fit capture-point search**, not a strict boundary-value solution
-- the transfer is not yet optimized for exact arrival relative velocity
-- the controller is not yet tied to a realistic navigation-estimation pipeline
-- orbit initialization and inclination usage should be reviewed for strict physical consistency
-- mission phases are logically connected, but still need refinement for a fully validated end-to-end scenario
-
----
+- Hohmann targeting is still a best-fit capture-point search, not a strict boundary-value solution.
+- The transfer is not yet optimized for exact arrival relative velocity.
+- The active proximity-operations model is waypoint-impulsive and not yet tied to a realistic navigation-estimation pipeline.
+- Orbit initialization and inclination usage should be reviewed for strict physical consistency.
+- Mission phases are logically connected, but still need refinement for a fully validated end-to-end scenario.
 
 ## Suggested Development Roadmap
 
-1. **Exact capture-point targeting** using Lambert / shooting / differential correction
-2. **Relative-velocity matching** at capture
-3. **Navigation filter** for noisy state estimation
-4. **More realistic perturbation set**: drag, SRP, higher-order gravity if needed
-5. **Monte Carlo campaign support**
-6. **Automated regression test scripts**
-7. **Batch mission-case runner** for parameter sweeps
-
----
-
-## Recommended GitHub Usage
-
-Good commits for this repository are usually organized by one physical topic at a time, for example:
-
-- `fix phase-1 target co-propagation`
-- `add J2-aware wait-time search`
-- `refactor LVLH relative-state logging`
-- `tune final berthing controller`
-
-This makes the evolution of the mission logic much easier to trace.
-
----
+1. Exact capture-point targeting using Lambert / shooting / differential correction
+2. Relative-velocity matching at capture
+3. Navigation filter for noisy state estimation
+4. More realistic perturbation set: drag, SRP, higher-order gravity if needed
+5. Monte Carlo campaign support
+6. Automated regression test scripts
+7. Batch mission-case runner for parameter sweeps
 
 ## License
 
-No license file is included yet.
-
-Before making the repository public, it is recommended to choose a license explicitly, for example:
-
-- **MIT License** for maximum reuse
-- **BSD-3-Clause** for permissive academic/project use
-- **GPL-3.0** if derivative open-source sharing is important
-
----
-
-## Author Notes
-
-This repository is being actively shaped toward an **end-to-end unmanned rendezvous mission simulator**. The code already contains several physically meaningful building blocks, and the current documentation is written to make that development path easier to understand and continue.
+No license file is included yet. Before making the repository public, choose a license explicitly, such as MIT, BSD-3-Clause, or GPL-3.0 depending on the intended reuse model.

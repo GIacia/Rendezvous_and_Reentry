@@ -61,7 +61,7 @@ phasing_mode = "CUSTOM_IMPULSE";
 [X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, 1);
 m_current = X_chaser(14);
 
-% Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
+Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
 
 h_vec_p1 = cross(X_target(1:3), X_target(4:6));
 i_u_p1 = X_target(1:3)/norm(X_target(1:3));
@@ -143,8 +143,7 @@ if norm(rel0_lvlh - p2.S2) > p2.initial_S2_tol
     dv_lvlh = cw_delta_v_to_waypoint_local(r_rel, v_rel, p2.S2, tof_seg, n_now);
 
     [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_lvlh, sys, p2);
-%    dV_p2 = dV_p2 + norm(dv_lvlh);
-    dV_p1 = dV_p1 + norm(dv_lvlh);
+    dV_p2 = dV_p2 + norm(dv_lvlh);
     fuel_p2 = fuel_p2 + fuel_seg;
 
     fprintf('   cleanup_to_S2     : target [%+7.1f,%+7.1f,%+6.1f] m, TOF %5.0f s, dV %8.4f m/s\n', ...
@@ -167,8 +166,7 @@ end
 dv_hold_s2_lvlh = -v_s2;
 if norm(dv_hold_s2_lvlh) > 1e-6
     [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_hold_s2_lvlh, sys, p2);
-%    dV_p2 = dV_p2 + norm(dv_hold_s2_lvlh);
-    dV_p1 = dV_p1 + norm(dv_hold_s2_lvlh);
+    dV_p2 = dV_p2 + norm(dv_hold_s2_lvlh);
     fuel_p2 = fuel_p2 + fuel_seg;
     hist_mass(end) = X_chaser(14);
     hist_p2.mass(end) = X_chaser(14);
@@ -189,15 +187,10 @@ dv_cycloid_lvlh = [0; p2.vbar_burn_sign * v0_cycloid; 0];
 expected_delta_R_code = 4 * dv_cycloid_lvlh(2) / n_now;
 
 [X_chaser, fuel_seg] = apply_impulse_lvlh_local(X_chaser, X_target, dv_cycloid_lvlh, sys, p2);
-% dV_p2 = dV_p2 + norm(dv_cycloid_lvlh);
-dV_p1 = dV_p1 + norm(dv_cycloid_lvlh);
+dV_p2 = dV_p2 + norm(dv_cycloid_lvlh);
 fuel_p2 = fuel_p2 + fuel_seg;
 hist_mass(end) = X_chaser(14);
 hist_p2.mass(end) = X_chaser(14);
-
-% temporarily here,, to include the Hohmann circularization maneuver effect
-% to Phase 1
-Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
 
 fprintf('   S2_to_S3_cycloid  : single %+.4f m/s V-bar impulse, |delta_R|max %.1f m', ...
         dv_cycloid_lvlh(2), p2.delta_R_cycloid);
@@ -365,7 +358,7 @@ for refine = 1:p2.max_terminal_refines
 end
 
 % Final braking impulse: cancel residual LVLH relative velocity at S4.
-[r_final, v_final] = rel_state_lvlh_local(X_chaser, X_target);
+[~, v_final] = rel_state_lvlh_local(X_chaser, X_target);
 dv_stop_lvlh = -v_final;
 [X_chaser, fuel_stop] = apply_impulse_lvlh_local(X_chaser, X_target, dv_stop_lvlh, sys, p2);
 dV_p2 = dV_p2 + norm(dv_stop_lvlh);
@@ -382,7 +375,50 @@ fprintf('   Phase 2 total dV: %.4f m/s, fuel: %.4f kg, elapsed: %.2f min\n', dV_
 m_current = X_chaser(14);
 Budget = [Budget; {"Phase 2: Cycloid + R-bar", dV_p2, fuel_p2, m_current}];
 
-%% 4. Phase 3: Re-entry (500 km -> 200 km)
+%% 4. Phase 3: Re-entry
+fprintf('\n[Phase 3] 3-DOF re-entry simulation start...\n');
+
+% Select Phase 3 mode here.
+%   "HOHMANN"        : legacy direct FPA-targeted Hohmann-style descent.
+%   "R_BAR_200_FPA" : lower to 200 km, wait until below the target on R-bar,
+%                     then inject toward the 120 km / 4 deg FPA interface.
+reentry_mode = "R_BAR_200_FPA";
+reentry_mode_env = getenv('RENDEZVOUS_PHASE3_MODE');
+if strlength(reentry_mode_env) > 0
+    reentry_mode = string(reentry_mode_env);
+end
+fprintf('   selected Phase 3 mode: %s\n', reentry_mode);
+
+reentry_info = struct();
+
+if reentry_mode == "HOHMANN"
+    [target_reentry_r, ~] = compute_reentry_target_radius_local(norm(X_chaser(1:3)), sys);
+
+    % Legacy behavior: feed the FPA-derived terminal radius into the phasing
+    % propagator and let it perform the Hohmann-style descent.
+    [X_chaser, dV_p3, fuel_p3, hist_p3, X_target] = ...
+        Phasing_Propagator(sys, X_chaser, target_reentry_r, "HOHMANN", custom_params, X_target, 3);
+
+    fprintf('   final altitude: %.2f km\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
+
+elseif reentry_mode == "R_BAR_200_FPA"
+    [X_chaser, X_target, dV_p3, fuel_p3, hist_p3, reentry_info] = ...
+        run_phase3_rbar_200_fpa_local(sys, X_chaser, X_target, custom_params);
+
+    fprintf('   final altitude: %.2f km\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
+    fprintf('   final 200 km -> 120 km injection dV %.4f m/s is included in Phase 3 dV, but its fuel is excluded.\n', ...
+            reentry_info.final_injection_dV);
+
+else
+    error('Unknown Phase 3 reentry_mode: %s. Use "HOHMANN" or "R_BAR_200_FPA".', reentry_mode);
+end
+
+m_current = X_chaser(14);
+Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
+
+legacy_phase3_block_enabled = strcmp(getenv('RENDEZVOUS_ENABLE_LEGACY_PHASE3_BLOCK'), '1');
+if legacy_phase3_block_enabled
+%% Legacy Phase 3 block retained for reference.
 fprintf('\n[Phase 3] 3-DOF 재진입 시뮬레이션 시작 (J2 섭동 및 노이즈 역추진)...\n');
 
 % 고추력으로 대기권 인터페이스에 하강
@@ -408,6 +444,7 @@ Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
 fprintf('   도달 고도: %.2f km (목표: 200.00 km)\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
 
 % 120 km에 가장 가까운 history 지점에서 flight path angle 계산
+end
 target_alt_fpa = 120e3;  % [m]
 
 alt_hist_p3 = vecnorm(hist_p3.pos, 2, 1) - sys.Re;
@@ -642,4 +679,363 @@ function [X_chaser, X_target, hist] = propagate_pair_free_local(X_chaser, X_targ
         hist.mass(kk) = X_chaser(14);
         hist.time(kk) = t0 + t_elapsed;
     end
+end
+
+%% Local helper functions for Phase 3 selectable re-entry modes
+function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_200_fpa_local(sys, X_chaser, X_target, custom_params)
+    info = struct();
+    hist = init_phase3_hist_local();
+    dV_used = 0;
+    fuel_used = 0;
+
+    phase3_params = custom_params;
+    phase3_params.capture_pos_tol = inf;
+
+    target_200_r = sys.Re + sys.h_reentry;
+    fprintf('   R_BAR_200_FPA leg 1: lowering to %.1f km circular parking orbit...\n', sys.h_reentry/1000);
+    [X_chaser, dV_drop, fuel_drop, hist_drop, X_target] = ...
+        Phasing_Propagator(sys, X_chaser, target_200_r, "HOHMANN", phase3_params, X_target, 3);
+
+    hist = append_phase3_hist_local(hist, hist_drop);
+    dV_used = dV_used + dV_drop;
+    fuel_used = fuel_used + fuel_drop;
+
+    fprintf('      200 km parking orbit reached: altitude %.2f km, dV %.4f m/s, fuel %.4f kg\n', ...
+            (norm(X_chaser(1:3)) - sys.Re)/1000, dV_drop, fuel_drop);
+
+    n_chaser = orbit_rate_from_state_local(X_chaser);
+    n_target = orbit_rate_from_state_local(X_target);
+    if abs(n_chaser - n_target) > 1e-12
+        default_rbar_wait = 2 * 2*pi / abs(n_chaser - n_target);
+    else
+        default_rbar_wait = 2 * 86400;
+    end
+
+    dt_rbar = get_phase3_param_local(custom_params, 'dt_rbar_wait', 30);
+    max_rbar_wait = get_phase3_param_local(custom_params, 'max_rbar_wait', default_rbar_wait);
+    rbar_vbar_tol = get_phase3_param_local(custom_params, 'rbar_vbar_tol', 10);
+    rbar_radial_tol = get_phase3_param_local(custom_params, 'rbar_radial_tol', 50e3);
+
+    fprintf('   R_BAR_200_FPA leg 2: waiting for target R-bar alignment below the station...\n');
+    [X_chaser, X_target, hist_wait, wait_time, rel_rbar] = ...
+        propagate_until_rbar_below_local(X_chaser, X_target, sys, max_rbar_wait, dt_rbar, rbar_vbar_tol, rbar_radial_tol, hist.time_end);
+
+    hist = append_phase3_hist_local(hist, hist_wait);
+    info.rbar_wait_time = wait_time;
+    info.rbar_rel_lvlh = rel_rbar;
+
+    fprintf('      R-bar alignment after %.2f min, LVLH rel-pos [%+.1f, %+.1f, %+.1f] m\n', ...
+            wait_time/60, rel_rbar(1), rel_rbar(2), rel_rbar(3));
+
+    [target_reentry_r, fpa_calc] = compute_reentry_target_radius_local(norm(X_chaser(1:3)), sys);
+    info.fpa_calc = fpa_calc;
+    info.reentry_target_radius = target_reentry_r;
+
+    fprintf('   R_BAR_200_FPA leg 3: fuel-excluded injection toward 120 km / %.2f deg FPA...\n', ...
+            rad2deg(sys.reentry_flight_path_angle));
+    [X_chaser, dV_entry, fuel_equiv] = apply_reentry_departure_impulse_no_fuel_local(X_chaser, target_reentry_r, sys);
+    dV_used = dV_used + dV_entry;
+
+    info.final_injection_dV = dV_entry;
+    info.final_injection_fuel_equivalent = fuel_equiv;
+
+    hist = log_phase3_state_local(hist, X_chaser, X_target, hist.time_end);
+
+    r_start = norm(X_chaser(1:3));
+    a_trans = 0.5 * (r_start + target_reentry_r);
+    default_reentry_time = 1.2 * pi * sqrt(a_trans^3 / sys.mu);
+    dt_reentry = get_phase3_param_local(custom_params, 'dt_reentry_coast', 2);
+    max_reentry_time = get_phase3_param_local(custom_params, 'max_reentry_coast_time', default_reentry_time);
+
+    [X_chaser, X_target, hist_entry, coast_time] = ...
+        propagate_until_altitude_local(X_chaser, X_target, sys, 120e3, max_reentry_time, dt_reentry, hist.time_end);
+
+    hist = append_phase3_hist_local(hist, hist_entry);
+    info.reentry_coast_time = coast_time;
+
+    fprintf('      120 km interface reached after %.2f min; fuel-equivalent %.4f kg was not charged.\n', ...
+            coast_time/60, fuel_equiv);
+end
+
+function [target_r, details] = compute_reentry_target_radius_local(start_r, sys)
+    interface_r = sys.Re + 120e3;
+    gamma = sys.reentry_flight_path_angle;
+    phi = 2 * atan(start_r / (start_r - interface_r) * tan(gamma));
+    denom = sin(phi) * cos(gamma) - cos(phi) * sin(gamma);
+
+    if abs(denom) < 1e-12
+        error('Re-entry FPA geometry became singular. Check start radius and flight-path angle.');
+    end
+
+    ecc = sin(gamma) / denom;
+    target_r = (1 - ecc) / (1 + ecc) * start_r;
+
+    if ~isfinite(target_r) || target_r <= 0
+        error('Computed invalid re-entry target radius %.6g m.', target_r);
+    end
+
+    details = struct();
+    details.start_radius = start_r;
+    details.interface_radius = interface_r;
+    details.flight_path_angle = gamma;
+    details.phi = phi;
+    details.eccentricity = ecc;
+    details.target_radius = target_r;
+end
+
+function [X_chaser, dV_mag, fuel_equiv] = apply_reentry_departure_impulse_no_fuel_local(X_chaser, target_r, sys)
+    r_current = norm(X_chaser(1:3));
+    v_current = norm(X_chaser(4:6));
+    a_trans = 0.5 * (r_current + target_r);
+    sqrt_arg = sys.mu * (2/r_current - 1/a_trans - sys.J2 * sys.Re^2 / r_current^3 * (3 * (X_chaser(3)/r_current)^2 - 1));
+
+    if sqrt_arg <= 0
+        error('Computed invalid re-entry injection speed. sqrt argument = %.6g.', sqrt_arg);
+    end
+
+    v_trans1 = sqrt(sqrt_arg);
+    dV_cmd = v_trans1 - v_current;
+    dV_mag = abs(dV_cmd);
+
+    X_chaser(4:6) = X_chaser(4:6) + dV_cmd * X_chaser(4:6) / v_current;
+    fuel_equiv = X_chaser(14) * (1 - exp(-dV_mag / (sys.Isp * sys.g0)));
+end
+
+function [X_chaser, X_target, hist, elapsed, rel_lvlh] = propagate_until_rbar_below_local(X_chaser, X_target, sys, max_wait, dt, vbar_tol, radial_tol, t0)
+    hist = init_phase3_hist_local();
+    elapsed = 0;
+    [rel_prev, ~] = rel_state_lvlh_local(X_chaser, X_target);
+
+    if is_below_target_rbar_local(rel_prev, X_chaser, X_target, radial_tol) && abs(rel_prev(2)) <= vbar_tol
+        rel_lvlh = rel_prev;
+        hist = log_phase3_state_local(hist, X_chaser, X_target, t0);
+        return;
+    end
+
+    while elapsed < max_wait - 1e-12
+        dt_step = min(dt, max_wait - elapsed);
+        X_prev = X_chaser;
+        T_prev = X_target;
+        y_prev = rel_prev(2);
+
+        [X_next, T_next] = rk4_pair_step_full_local(X_prev, T_prev, dt_step, sys, t0 + elapsed);
+        [rel_next, ~] = rel_state_lvlh_local(X_next, T_next);
+        y_next = rel_next(2);
+
+        crossed_vbar = (y_prev == 0) || (y_next == 0) || (sign(y_prev) ~= sign(y_next));
+        below_target_rbar = is_below_target_rbar_local(rel_next, X_next, T_next, radial_tol);
+        if below_target_rbar && (abs(y_next) <= vbar_tol || crossed_vbar)
+            if crossed_vbar && y_prev ~= 0 && y_next ~= 0
+                [X_chaser, X_target, t_cross] = refine_vbar_crossing_local(X_prev, T_prev, y_prev, dt_step, sys, t0 + elapsed);
+                elapsed = elapsed + t_cross;
+            else
+                X_chaser = X_next;
+                X_target = T_next;
+                elapsed = elapsed + dt_step;
+            end
+
+            [rel_lvlh, ~] = rel_state_lvlh_local(X_chaser, X_target);
+            hist = log_phase3_state_local(hist, X_chaser, X_target, t0 + elapsed);
+            return;
+        end
+
+        elapsed = elapsed + dt_step;
+        X_chaser = X_next;
+        X_target = T_next;
+        rel_prev = rel_next;
+        hist = log_phase3_state_local(hist, X_chaser, X_target, t0 + elapsed);
+    end
+
+    error('R_BAR_200_FPA did not reach target R-bar alignment within %.2f hours.', max_wait/3600);
+end
+
+function tf = is_below_target_rbar_local(rel_lvlh, X_chaser, X_target, radial_tol)
+    radial_gap = norm(X_target(1:3)) - norm(X_chaser(1:3));
+    tf = rel_lvlh(1) < 0 && abs(rel_lvlh(1) + radial_gap) <= radial_tol;
+end
+
+function [X_cross, T_cross, t_cross] = refine_vbar_crossing_local(X0, T0, y0, dt_window, sys, t_abs0)
+    lo = 0;
+    hi = dt_window;
+    X_cross = X0;
+    T_cross = T0;
+    t_cross = 0;
+
+    for iter = 1:40
+        mid = 0.5 * (lo + hi);
+        [X_mid, T_mid] = propagate_pair_state_only_full_local(X0, T0, mid, min(2, max(mid/10, 0.1)), sys, t_abs0);
+        [rel_mid, ~] = rel_state_lvlh_local(X_mid, T_mid);
+
+        if sign(rel_mid(2)) == sign(y0)
+            lo = mid;
+        else
+            hi = mid;
+            X_cross = X_mid;
+            T_cross = T_mid;
+            t_cross = mid;
+        end
+    end
+end
+
+function [X_chaser, X_target, hist, elapsed] = propagate_until_altitude_local(X_chaser, X_target, sys, target_alt, max_time, dt, t0)
+    hist = init_phase3_hist_local();
+    elapsed = 0;
+    alt_prev = norm(X_chaser(1:3)) - sys.Re;
+
+    if alt_prev <= target_alt
+        hist = log_phase3_state_local(hist, X_chaser, X_target, t0);
+        return;
+    end
+
+    while elapsed < max_time - 1e-12
+        dt_step = min(dt, max_time - elapsed);
+        X_prev = X_chaser;
+        T_prev = X_target;
+
+        [X_next, T_next] = rk4_pair_step_full_local(X_prev, T_prev, dt_step, sys, t0 + elapsed);
+        alt_next = norm(X_next(1:3)) - sys.Re;
+
+        if alt_next <= target_alt
+            [X_chaser, X_target, t_cross] = refine_altitude_crossing_local(X_prev, T_prev, target_alt, dt_step, sys, t0 + elapsed);
+            elapsed = elapsed + t_cross;
+            hist = log_phase3_state_local(hist, X_chaser, X_target, t0 + elapsed);
+            return;
+        end
+
+        elapsed = elapsed + dt_step;
+        X_chaser = X_next;
+        X_target = T_next;
+        hist = log_phase3_state_local(hist, X_chaser, X_target, t0 + elapsed);
+    end
+
+    error('Re-entry coast did not reach %.1f km altitude within %.2f min.', target_alt/1000, max_time/60);
+end
+
+function [X_cross, T_cross, t_cross] = refine_altitude_crossing_local(X0, T0, target_alt, dt_window, sys, t_abs0)
+    lo = 0;
+    hi = dt_window;
+    X_cross = X0;
+    T_cross = T0;
+    t_cross = 0;
+
+    for iter = 1:40
+        mid = 0.5 * (lo + hi);
+        [X_mid, T_mid] = propagate_pair_state_only_full_local(X0, T0, mid, min(1, max(mid/10, 0.05)), sys, t_abs0);
+        alt_mid = norm(X_mid(1:3)) - sys.Re;
+
+        if alt_mid > target_alt
+            lo = mid;
+        else
+            hi = mid;
+            X_cross = X_mid;
+            T_cross = T_mid;
+            t_cross = mid;
+        end
+    end
+end
+
+function [X_chaser, X_target] = propagate_pair_state_only_full_local(X_chaser, X_target, duration, dt, sys, t_abs0)
+    if duration <= 0
+        return;
+    end
+
+    elapsed = 0;
+    while elapsed < duration - 1e-12
+        dt_step = min(dt, duration - elapsed);
+        [X_chaser, X_target] = rk4_pair_step_full_local(X_chaser, X_target, dt_step, sys, t_abs0 + elapsed);
+        elapsed = elapsed + dt_step;
+    end
+end
+
+function [X_chaser, X_target] = rk4_pair_step_full_local(X_chaser, X_target, dt_step, sys, t_abs)
+    X_t_state = [X_target; zeros(7,1); sys.Target_Mass];
+    k1_t = Env_EOM(t_abs,             X_t_state,                [0;0;0], [0;0;0], sys, false);
+    k2_t = Env_EOM(t_abs+dt_step/2,   X_t_state+k1_t*dt_step/2, [0;0;0], [0;0;0], sys, false);
+    k3_t = Env_EOM(t_abs+dt_step/2,   X_t_state+k2_t*dt_step/2, [0;0;0], [0;0;0], sys, false);
+    k4_t = Env_EOM(t_abs+dt_step,     X_t_state+k3_t*dt_step,   [0;0;0], [0;0;0], sys, false);
+    X_target = X_target + (dt_step/6)*(k1_t(1:6) + 2*k2_t(1:6) + 2*k3_t(1:6) + k4_t(1:6));
+
+    k1 = Env_EOM(t_abs,             X_chaser,             [0;0;0], [0;0;0], sys, true);
+    k2 = Env_EOM(t_abs+dt_step/2,   X_chaser+k1*dt_step/2,[0;0;0], [0;0;0], sys, true);
+    k3 = Env_EOM(t_abs+dt_step/2,   X_chaser+k2*dt_step/2,[0;0;0], [0;0;0], sys, true);
+    k4 = Env_EOM(t_abs+dt_step,     X_chaser+k3*dt_step,  [0;0;0], [0;0;0], sys, true);
+    X_chaser = X_chaser + (dt_step/6)*(k1 + 2*k2 + 2*k3 + k4);
+
+    if norm(X_chaser(7:10)) > 0
+        X_chaser(7:10) = X_chaser(7:10) / norm(X_chaser(7:10));
+    end
+end
+
+function n = orbit_rate_from_state_local(X)
+    r = X(1:3);
+    v = X(4:6);
+    n = norm(cross(r, v)) / norm(r)^2;
+end
+
+function value = get_phase3_param_local(s, name, default_value)
+    if isstruct(s) && isfield(s, name) && ~isempty(s.(name))
+        value = s.(name);
+    else
+        value = default_value;
+    end
+end
+
+function hist = init_phase3_hist_local()
+    hist.pos = [];
+    hist.vel = [];
+    hist.mass = [];
+    hist.time = [];
+    hist.time_end = 0;
+    hist.target_pos = [];
+    hist.target_vel = [];
+    hist.rel_pos = [];
+    hist.rel_pos_lvlh = [];
+    hist.rel_vel_lvlh = [];
+end
+
+function hist = log_phase3_state_local(hist, X_chaser, X_target, t)
+    if ~isfield(hist, 'time')
+        hist = init_phase3_hist_local();
+    end
+
+    hist.pos = [hist.pos, X_chaser(1:3)];
+    hist.vel = [hist.vel, X_chaser(4:6)];
+    hist.mass = [hist.mass, X_chaser(14)];
+    hist.time = [hist.time, t];
+    hist.time_end = t;
+
+    if ~isempty(X_target)
+        hist.target_pos = [hist.target_pos, X_target(1:3)];
+        hist.target_vel = [hist.target_vel, X_target(4:6)];
+        hist.rel_pos = [hist.rel_pos, X_chaser(1:3) - X_target(1:3)];
+        [rel_lvlh, rel_vel_lvlh] = rel_state_lvlh_local(X_chaser, X_target);
+        hist.rel_pos_lvlh = [hist.rel_pos_lvlh, rel_lvlh];
+        hist.rel_vel_lvlh = [hist.rel_vel_lvlh, rel_vel_lvlh];
+    end
+end
+
+function hist = append_phase3_hist_local(hist, sub_hist)
+    if isempty(sub_hist) || ~isfield(sub_hist, 'time') || isempty(sub_hist.time)
+        return;
+    end
+
+    if ~isfield(hist, 'time') || isempty(hist.time)
+        hist = sub_hist;
+        if ~isfield(hist, 'time_end')
+            hist.time_end = hist.time(end);
+        end
+        return;
+    end
+
+    fields = {'pos','vel','mass','time','target_pos','target_vel','rel_pos','rel_pos_lvlh','rel_vel_lvlh'};
+    for ii = 1:numel(fields)
+        f = fields{ii};
+        if ~isfield(hist, f)
+            hist.(f) = [];
+        end
+        if isfield(sub_hist, f) && ~isempty(sub_hist.(f))
+            hist.(f) = [hist.(f), sub_hist.(f)];
+        end
+    end
+    hist.time_end = hist.time(end);
 end
