@@ -8,7 +8,7 @@ Its responsibilities are:
 
 1. load mission constants from `Mission_Config.m`
 2. initialize chaser and target states
-3. run the mission in three major phases
+3. run the mission in four major phases
 4. accumulate delta-V / fuel usage
 5. visualize the mission history
 
@@ -35,8 +35,8 @@ Responsible for mission phases dominated by orbital transfer rather than close-r
 It currently supports:
 
 - impulsive Hohmann departure and circularization
-- Lambert-style transfer option
 - custom phase targeting with selectable impulsive or finite-burn execution
+- Multi-Hohmann transfer splitting for burn-duration / thermal constraints
 - target co-propagation during transfer
 - J2-aware wait-time scanning before departure
 - history logging for both chaser and target
@@ -59,7 +59,7 @@ Major internal steps:
 8. apply braking impulses at hold points
 9. propagate the nonlinear chaser/target dynamics with `Env_EOM.m`
 
-Older continuous-force `GNC_Controller.m` files are preserved in `legacy/`, but they are not part of the active root-level execution path.
+Older force-based `GNC_Controller.m` files are preserved in `legacy/`, but they are not part of the active root-level execution path.
 
 ### `Env_EOM.m`
 
@@ -73,7 +73,7 @@ Depending on mode, it supports:
 
 ### Python Helpers
 
-`J2PolarHohmann.py` and `J2PolarHohmannShooting.py` form a separate SciPy workflow for studying J2 polar Hohmann-like rendezvous behavior and tuning the active `CUSTOM_IMPULSE` parameters used by the MATLAB script.
+`J2PolarHohmann.py` and `J2PolarHohmannShooting.py` form a separate SciPy workflow for studying J2 polar Hohmann-like rendezvous behavior and tuning the active `CUSTOM_IMPULSE` parameters used by the MATLAB script. The shooting script can export a MATLAB-readable JSON configuration.
 
 ## 3. Data Flow
 
@@ -93,8 +93,14 @@ to updated chaser and target states, proximity history, delta-V, fuel
 ### Phase 3
 
 `Main_Mission_Simulator`
-to `Phasing_Propagator`
-to descent / de-orbit style propagation and budget update
+to Phase 3 local helpers / `Phasing_Propagator`
+to 120 km entry-interface state and budget update
+
+### Phase 4
+
+`Main_Mission_Simulator`
+to `Reentry_Propagator`
+to atmospheric-entry history, heating/dynamic-pressure/g-load diagnostics, and chaser-to-entry-vehicle LOS summary
 
 ## 4. Frames Used
 
@@ -102,6 +108,7 @@ The project uses both:
 
 - ECI-like inertial coordinates for orbital propagation
 - LVLH coordinates for proximity guidance and interpretation of relative motion
+- atmosphere-relative velocity with a co-rotating atmosphere for drag and entry aerodynamics
 
 Important practical note: the physical meaning of the final approach depends strongly on how the LVLH frame is built from the target state and how relative velocity is defined with frame rotation included.
 
@@ -118,7 +125,7 @@ The current structure reflects a useful separation of concerns:
 
 That separation makes future upgrades easier, such as:
 
-- replacing Hohmann targeting with Lambert + correction
+- replacing current capture targeting with a validated boundary-value / shooting correction method
 - restoring or replacing the proximity controller with CW / HCW / MPC / LQR logic
 - introducing estimation and navigation filters
 - adding batch Monte Carlo runners

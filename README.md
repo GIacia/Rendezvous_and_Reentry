@@ -5,14 +5,16 @@ MATLAB-based end-to-end rendezvous mission simulator for an unmanned chaser spac
 - **Phase 1**: 3-DOF phasing / homing with impulsive maneuvers and J2-aware orbital propagation
 - **Phase 2**: LVLH waypoint-impulse proximity operations with cycloidal drift, R-bar hops, nonlinear J2 propagation, and mass bookkeeping
 - **Phase 3**: selectable 3-DOF de-orbit / re-entry modes, including direct FPA-targeted descent and a 200 km R-bar-aligned re-entry setup
+- **Phase 4**: atmospheric entry from the 120 km interface, with re-entry vehicle shape selection, heat-rate diagnostics, and chaser-to-entry-vehicle line-of-sight checks
 
-The project is designed as a mission-level simulation framework rather than a single guidance-law demo. It is useful for studying how orbit transfer logic, target-relative geometry, J2 perturbation, mass depletion, and proximity-operation sequencing interact in one continuous workflow.
+The project is designed as a mission-level simulation framework rather than a single guidance-law demo. It is useful for studying how orbit transfer logic, target-relative geometry, J2 perturbation, mass depletion, proximity-operation sequencing, and entry diagnostics interact in one connected workflow.
 
 ## Current Scope
 
 This repository currently models:
 
 - Earth central gravity + J2 perturbation
+- Optional atmospheric drag using an ISA76-style standard-atmosphere density model
 - A target spacecraft and a chaser spacecraft
 - Hohmann-based phase planning with target co-propagation
 - A J2-aware wait-time search before departure so the transfer arrives closer to a desired LVLH capture point
@@ -22,7 +24,7 @@ This repository currently models:
 - selectable Phase 3 re-entry logic through `reentry_mode`
 - Simple thrust uncertainty / noise injection in selected phasing modes
 - Mission-level delta-V and propellant budget tracking
-- Visualization of trajectory, altitude history, proximity trajectory, and mass depletion
+- Visualization of trajectory, altitude history, proximity trajectory, mass depletion, atmospheric-entry heat flux, dynamic pressure, g-load, and line-of-sight margin
 
 ## Repository Structure
 
@@ -30,8 +32,11 @@ This repository currently models:
 .
 |-- Main_Mission_Simulator.m      % Main entry point for the full mission
 |-- Mission_Config.m              % Physical constants, vehicle data, mission parameters
-|-- Phasing_Propagator.m          % 3-DOF phasing / Hohmann / Lambert / custom impulse logic
+|-- Phasing_Propagator.m          % 3-DOF phasing, Hohmann, Multi-Hohmann, custom impulse logic
 |-- Env_EOM.m                     % Environment and 3-DOF/6-DOF equations of motion
+|-- Atmospheric_Drag_Acceleration.m % Shared MATLAB atmospheric-drag model
+|-- Standard_Atmosphere_Density.m % Shared ISA76-style atmosphere helper
+|-- Reentry_Propagator.m          % 120 km atmospheric-entry propagation and LOS diagnostics
 |-- J2PolarHohmann.py             % Python J2 polar Hohmann propagation study
 |-- J2PolarHohmannShooting.py     % Python shooting / constrained optimization helper
 |-- docs/
@@ -55,6 +60,43 @@ The active MATLAB `.m` files are intentionally kept at the repository root so th
 3. Run:
 
 ```matlab
+Main_Mission_Simulator
+```
+
+Python shooting results can be exported directly into a MATLAB-readable mission config:
+
+```bash
+python J2PolarHohmannShooting.py --no-plot --matlab-config-out configs/latest_python_solution.json
+```
+
+Atmospheric drag is off by default. To optimize with the ISA76 drag option and export the same environment settings to MATLAB:
+
+```bash
+python J2PolarHohmannShooting.py --no-plot --atmospheric-drag isa76 --matlab-config-out configs/latest_python_solution.json
+```
+
+Then load that config in MATLAB:
+
+```matlab
+setenv('RENDEZVOUS_CONFIG_JSON','configs/latest_python_solution.json')
+Main_Mission_Simulator
+```
+
+The JSON file overrides only the fields it contains, so `Mission_Config.m` remains the default source of truth.
+
+For a quick MATLAB-only drag run without editing files:
+
+```matlab
+setenv('RENDEZVOUS_ATMOSPHERIC_DRAG','ISA76')
+Main_Mission_Simulator
+```
+
+Clear it with `setenv('RENDEZVOUS_ATMOSPHERIC_DRAG','OFF')` or by clearing the environment variable.
+
+The atmospheric entry vehicle shape is selected independently. Available values are `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, and `TPS_MIN`:
+
+```matlab
+setenv('RENDEZVOUS_REENTRY_SHAPE','TPS_MIN')
 Main_Mission_Simulator
 ```
 
@@ -112,7 +154,7 @@ The active Phase 2 implementation includes:
 - nonlinear free propagation with `Env_EOM.m`
 - braking impulses and propellant bookkeeping at hold points
 
-Older continuous-force `GNC_Controller.m` implementations are preserved under `legacy/`, but they are not called by the current root-level mission script.
+Older force-based `GNC_Controller.m` implementations are preserved under `legacy/`, but they are not called by the current root-level mission script.
 
 ### Phase 3: Re-entry / Descent
 
@@ -120,10 +162,16 @@ Phase 3 is selected with `reentry_mode` in `Main_Mission_Simulator.m`.
 
 Current modes:
 
-- `HOHMANN`: preserves the previous direct FPA-targeted Hohmann-style descent. It computes the radius needed to pass near 120 km at the configured 4 deg flight-path angle, then sends that target radius to `Phasing_Propagator.m`.
+- `HOHMANN`: performs a direct FPA-targeted de-orbit injection and stops at the 120 km entry interface. It no longer performs a nonphysical circularization after crossing the interface.
 - `R_BAR_200_FPA`: first lowers from the station orbit region to a 200 km parking orbit, waits until the vehicle is below the target on the target R-bar, then performs a final 200 km to 120 km injection using the same FPA geometry. The final injection delta-V is always reported; its propellant can be included or excluded with `charge_final_reentry_fuel` or `RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL`.
 
 Both modes still use the same post-run check of the actual flight-path angle near 120 km altitude.
+
+### Phase 4: Atmospheric Entry
+
+After Phase 3 reaches the 120 km interface, `Reentry_Propagator.m` propagates a separated re-entry vehicle through a co-rotating ISA76 atmosphere. The translational state remains ECI, but drag and lift use atmosphere-relative velocity, which is equivalent to an ECEF-relative aerodynamic velocity model.
+
+The pre-Phase-3 chaser state is propagated separately as an orbiting relay. The code checks whether the re-entry vehicle and relay chaser maintain geometric line of sight by testing Earth-limb clearance along the connecting segment. It also plots heat flux, total heat load, dynamic pressure, aero g-load, and LOS clearance/elevation.
 
 ## Main Files
 
@@ -144,6 +192,8 @@ Contains mission constants and tuning parameters such as:
 - vehicle mass and inertia
 - mission altitudes
 - propulsion system parameters
+- optional atmospheric-drag settings: model, Cd, reference area, and atmosphere co-rotation
+- re-entry vehicle shape definitions and entry settings
 - sensor / thrust uncertainty settings
 - nominal capture-point settings
 
@@ -152,7 +202,7 @@ Contains mission constants and tuning parameters such as:
 Handles impulsive orbital transfer logic for:
 
 - Hohmann transfer
-- Lambert transfer
+- Multi-Hohmann transfer
 - custom impulse phase targeting
 - target co-propagation
 - history logging of chaser/target states
@@ -164,7 +214,7 @@ Defines the equations of motion used for translational and rotational propagatio
 
 ### Python Helpers
 
-`J2PolarHohmann.py` and `J2PolarHohmannShooting.py` provide a SciPy-based side workflow for studying and tuning J2 polar Hohmann-like rendezvous parameters. They are not required for a normal MATLAB run, but they explain where the active `CUSTOM_IMPULSE` values can come from.
+`J2PolarHohmann.py` and `J2PolarHohmannShooting.py` provide a SciPy-based side workflow for studying and tuning J2 polar Hohmann-like rendezvous parameters. They are not required for a normal MATLAB run, but they explain where the active `CUSTOM_IMPULSE` values can come from. The Python workflow can also export atmospheric-drag settings into the MATLAB JSON config.
 
 ## Model Assumptions
 
@@ -172,14 +222,17 @@ This repository is best interpreted as a research / educational simulator rather
 
 Important assumptions include:
 
-- Earth gravity + J2 only
-- no atmospheric drag, SRP, third-body gravity, or full Earth-fixed frame effects in the orbital propagator
+- Earth gravity + J2, with optional atmospheric drag
+- no SRP, third-body gravity, or full Earth-fixed frame dynamics beyond the simple co-rotating atmosphere used by the drag and entry models
+- re-entry vehicle Cd is currently an assumed constant; only L/D trends and geometry are taken from the supplied shape PPT
 - simplified impulsive burns in the phasing and proximity stages
 - simplified thrust and sensor error models
 - simplified capture / berthing logic
 - no high-fidelity actuator, navigation filter, abort logic, or docking contact model
 
 A more detailed discussion is provided in `docs/ASSUMPTIONS_AND_LIMITATIONS.md`.
+
+For a Korean technical report with theory, usage, limitations, and references, see `docs/RENDEZVOUS_REENTRY_REPORT_KR.md`.
 
 ## Current Known Limitations
 
@@ -195,7 +248,7 @@ Examples of current limitations:
 
 ## Suggested Development Roadmap
 
-1. Exact capture-point targeting using Lambert / shooting / differential correction
+1. Exact capture-point targeting using shooting / differential correction
 2. Relative-velocity matching at capture
 3. Navigation filter for noisy state estimation
 4. More realistic perturbation set: drag, SRP, higher-order gravity if needed

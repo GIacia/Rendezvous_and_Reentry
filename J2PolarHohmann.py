@@ -12,11 +12,41 @@ from scipy.optimize import root_scalar, minimize_scalar
 class EarthJ2:
     mu: float = 398600.4418          # km^3/s^2
     radius: float = 6378.137         # km
-    J2: float = 1.08262668e-3        
+    J2: float = 1.08262668e-3
     # J2: float = 0.0
 
 
 G0_M_S2 = 9.80665
+
+DEFAULT_ENVIRONMENT_CONFIG = {
+    "atmospheric_drag": {
+        "enabled": False,
+        "model": "ISA76",
+        "co_rotate_atmosphere": True,
+        "earth_rotation_rad_s": 7.2921159e-5,
+        "chaser_cd": 2.2,
+        "chaser_area_m2": 4.0,
+        "target_cd": 2.2,
+        "target_area_m2": 4.0,
+        "target_mass_kg": 2000.0,
+    }
+}
+
+ISA76_ALTITUDE_KM = np.array([
+    0.0, 25.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0,
+    100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0,
+    170.0, 180.0, 190.0, 200.0, 250.0, 300.0, 350.0,
+    400.0, 450.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0
+])
+
+ISA76_DENSITY_KG_M3 = np.array([
+    1.225, 3.899e-2, 1.774e-2, 3.972e-3, 1.057e-3, 3.206e-4,
+    8.770e-5, 1.905e-5, 3.396e-6, 5.604e-7, 9.708e-8,
+    2.222e-8, 8.152e-9, 3.831e-9, 2.076e-9, 1.234e-9,
+    7.824e-10, 5.194e-10, 3.581e-10, 2.541e-10, 6.073e-11,
+    1.916e-11, 7.014e-12, 2.803e-12, 1.184e-12, 5.215e-13,
+    1.137e-13, 3.070e-14, 1.136e-14, 5.759e-15, 3.561e-15
+])
 
 
 # ============================================================
@@ -32,6 +62,157 @@ def signed_angle_error(angle, reference):
     Returns angle - reference wrapped to [-pi, pi].
     """
     return np.arctan2(np.sin(angle - reference), np.cos(angle - reference))
+
+
+def resolve_environment_config(environment_config=None):
+    config = {
+        "atmospheric_drag": DEFAULT_ENVIRONMENT_CONFIG["atmospheric_drag"].copy()
+    }
+
+    if environment_config is None:
+        return config
+
+    if isinstance(environment_config, str):
+        config["atmospheric_drag"]["model"] = environment_config
+        config["atmospheric_drag"]["enabled"] = environment_config.lower() not in {
+            "off", "none", "disabled", "0"
+        }
+        return config
+
+    if isinstance(environment_config, bool):
+        config["atmospheric_drag"]["enabled"] = environment_config
+        return config
+
+    if "atmospheric_drag" in environment_config:
+        source_drag = environment_config["atmospheric_drag"]
+        explicit_enabled = "enabled" in source_drag
+        config["atmospheric_drag"].update(source_drag)
+    else:
+        explicit_enabled = "enabled" in environment_config
+        config["atmospheric_drag"].update(environment_config)
+
+    model = normalize_atmosphere_model(
+        config["atmospheric_drag"].get("model", "ISA76")
+    )
+    if not explicit_enabled and model != "off":
+        config["atmospheric_drag"]["enabled"] = True
+
+    config["atmospheric_drag"]["enabled"] = as_bool(
+        config["atmospheric_drag"].get("enabled", False)
+    )
+    config["atmospheric_drag"]["model"] = model
+
+    return config
+
+
+def as_bool(value):
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def normalize_atmosphere_model(model):
+    model = str(model).strip().lower()
+    aliases = {
+        "isa": "isa76",
+        "atmosisa": "isa76",
+        "ussa76": "isa76",
+        "standard": "isa76",
+        "std": "isa76",
+        "none": "off",
+        "disabled": "off",
+        "0": "off",
+    }
+    model = aliases.get(model, model)
+    if model not in {"off", "isa76"}:
+        raise ValueError("atmospheric drag model must be 'off' or 'isa76'.")
+    return model
+
+
+def isa76_density_kg_m3(altitude_km):
+    altitude_km = max(0.0, float(altitude_km))
+    if altitude_km > ISA76_ALTITUDE_KM[-1]:
+        return 0.0
+
+    log_rho = np.interp(
+        altitude_km,
+        ISA76_ALTITUDE_KM,
+        np.log(ISA76_DENSITY_KG_M3)
+    )
+    return float(np.exp(log_rho))
+
+
+def atmosphere_density_kg_m3(altitude_km, environment_config=None):
+    env = resolve_environment_config(environment_config)
+    drag = env["atmospheric_drag"]
+    if not drag["enabled"]:
+        return 0.0
+
+    model = normalize_atmosphere_model(drag.get("model", "ISA76"))
+    if model == "off":
+        return 0.0
+    if model == "isa76":
+        return isa76_density_kg_m3(altitude_km)
+
+    raise ValueError(f"Unsupported atmosphere model: {model}")
+
+
+def atmospheric_drag_acceleration_eci(
+    r_eci_km,
+    v_eci_km_s,
+    mass_kg,
+    environment_config=None,
+    vehicle_role="chaser",
+    earth=EarthJ2()
+):
+    env = resolve_environment_config(environment_config)
+    drag = env["atmospheric_drag"]
+    model = normalize_atmosphere_model(drag.get("model", "ISA76"))
+
+    if not drag["enabled"] or model == "off":
+        return np.zeros(3)
+
+    if mass_kg <= 0.0:
+        return np.zeros(3)
+
+    role = str(vehicle_role).strip().lower()
+    if role == "target":
+        cd = float(drag.get("target_cd", drag.get("cd", 2.2)))
+        area_m2 = float(drag.get("target_area_m2", drag.get("area_m2", 4.0)))
+    else:
+        cd = float(drag.get("chaser_cd", drag.get("cd", 2.2)))
+        area_m2 = float(drag.get("chaser_area_m2", drag.get("area_m2", 4.0)))
+
+    if cd <= 0.0 or area_m2 <= 0.0:
+        return np.zeros(3)
+
+    altitude_km = np.linalg.norm(r_eci_km) - earth.radius
+    rho = atmosphere_density_kg_m3(altitude_km, env)
+    if rho <= 0.0 or not np.isfinite(rho):
+        return np.zeros(3)
+
+    r_m = np.array(r_eci_km, dtype=float) * 1000.0
+    v_m_s = np.array(v_eci_km_s, dtype=float) * 1000.0
+
+    if as_bool(drag.get("co_rotate_atmosphere", True)):
+        omega = drag.get("earth_rotation_rad_s", 7.2921159e-5)
+        if np.isscalar(omega):
+            omega_vec = np.array([0.0, 0.0, float(omega)])
+        else:
+            omega_vec = np.array(omega, dtype=float)
+        v_atm_m_s = np.cross(omega_vec, r_m)
+    else:
+        v_atm_m_s = np.zeros(3)
+
+    v_rel_m_s = v_m_s - v_atm_m_s
+    v_rel_norm = np.linalg.norm(v_rel_m_s)
+    if v_rel_norm == 0.0:
+        return np.zeros(3)
+
+    a_drag_m_s2 = -0.5 * rho * cd * area_m2 / mass_kg * v_rel_norm * v_rel_m_s
+    return a_drag_m_s2 / 1000.0
 
 
 # Polar orbital plane:
@@ -59,7 +240,7 @@ def circular_polar_state(radius_km, u_rad, earth=EarthJ2()):
     Direction: +x -> +z.
     """
     r = radius_km * (np.cos(u_rad) * P_HAT + np.sin(u_rad) * Q_HAT)
-    
+
     v_mag_np = np.sqrt(earth.mu / radius_km)
     v_mag = np.sqrt(earth.mu / radius_km * (1 - earth.J2 * (earth.radius / radius_km)**2 * (3*np.sin(u_rad)**2 - 1)))
     v = v_mag * (-np.sin(u_rad) * P_HAT + np.cos(u_rad) * Q_HAT)
@@ -253,7 +434,13 @@ def acceleration_j2_eci(r_eci, earth=EarthJ2()):
     return a_two_body + a_j2
 
 
-def target_chaser_ode_j2(t, y, earth=EarthJ2()):
+def target_chaser_ode_j2(
+    t,
+    y,
+    earth=EarthJ2(),
+    environment_config=None,
+    chaser_mass_kg=2000.0
+):
     """
     Combined target-chaser propagation.
 
@@ -269,12 +456,34 @@ def target_chaser_ode_j2(t, y, earth=EarthJ2()):
     v_t = y[3:6]
     r_c = y[6:9]
     v_c = y[9:12]
+    env = resolve_environment_config(environment_config)
+    target_mass_kg = env["atmospheric_drag"].get("target_mass_kg", 2000.0)
 
     dydt[0:3] = v_t
-    dydt[3:6] = acceleration_j2_eci(r_t, earth)
+    dydt[3:6] = (
+        acceleration_j2_eci(r_t, earth)
+        + atmospheric_drag_acceleration_eci(
+            r_t,
+            v_t,
+            target_mass_kg,
+            env,
+            vehicle_role="target",
+            earth=earth
+        )
+    )
 
     dydt[6:9] = v_c
-    dydt[9:12] = acceleration_j2_eci(r_c, earth)
+    dydt[9:12] = (
+        acceleration_j2_eci(r_c, earth)
+        + atmospheric_drag_acceleration_eci(
+            r_c,
+            v_c,
+            chaser_mass_kg,
+            env,
+            vehicle_role="chaser",
+            earth=earth
+        )
+    )
 
     return dydt
 
@@ -468,10 +677,15 @@ def normalize_burn_model(burn_model):
         "custom_impulse": "impulsive",
         "finite": "finite_burn",
         "finite_impulse": "finite_burn",
-        "continuous": "finite_burn",
     }
 
     model = aliases.get(model, model)
+
+    if model == "continuous":
+        raise ValueError(
+            "burn_model='continuous' is not supported. "
+            "Use 'finite_burn' for a short finite-duration execution of an impulsive delta-V."
+        )
 
     if model not in {"impulsive", "finite_burn"}:
         raise ValueError("burn_model must be 'impulsive' or 'finite_burn'.")
@@ -551,7 +765,15 @@ def finite_burn_duration_s(delta_v_km_s, mass_kg, thrust_N, isp_s):
     return (mass_kg - final_mass_kg) * exhaust_velocity_m_s / thrust_N
 
 
-def target_chaser_ode_j2_finite_burn(t, y, burn_dir_eci, thrust_N, isp_s, earth=EarthJ2()):
+def target_chaser_ode_j2_finite_burn(
+    t,
+    y,
+    burn_dir_eci,
+    thrust_N,
+    isp_s,
+    earth=EarthJ2(),
+    environment_config=None
+):
     """
     Combined target/chaser propagation with a finite high-thrust burn.
 
@@ -569,6 +791,8 @@ def target_chaser_ode_j2_finite_burn(t, y, burn_dir_eci, thrust_N, isp_s, earth=
     r_c = y[6:9]
     v_c = y[9:12]
     mass_kg = y[12]
+    env = resolve_environment_config(environment_config)
+    target_mass_kg = env["atmospheric_drag"].get("target_mass_kg", 2000.0)
 
     burn_dir = np.array(burn_dir_eci, dtype=float)
     burn_dir = burn_dir / np.linalg.norm(burn_dir)
@@ -576,10 +800,31 @@ def target_chaser_ode_j2_finite_burn(t, y, burn_dir_eci, thrust_N, isp_s, earth=
     thrust_accel_km_s2 = (thrust_N / mass_kg) / 1000.0
 
     dydt[0:3] = v_t
-    dydt[3:6] = acceleration_j2_eci(r_t, earth)
+    dydt[3:6] = (
+        acceleration_j2_eci(r_t, earth)
+        + atmospheric_drag_acceleration_eci(
+            r_t,
+            v_t,
+            target_mass_kg,
+            env,
+            vehicle_role="target",
+            earth=earth
+        )
+    )
 
     dydt[6:9] = v_c
-    dydt[9:12] = acceleration_j2_eci(r_c, earth) + thrust_accel_km_s2 * burn_dir
+    dydt[9:12] = (
+        acceleration_j2_eci(r_c, earth)
+        + atmospheric_drag_acceleration_eci(
+            r_c,
+            v_c,
+            mass_kg,
+            env,
+            vehicle_role="chaser",
+            earth=earth
+        )
+        + thrust_accel_km_s2 * burn_dir
+    )
     dydt[12] = -thrust_N / (isp_s * G0_M_S2)
 
     return dydt
@@ -595,7 +840,8 @@ def apply_finite_burn_to_chaser(
     rtol=1e-10,
     atol=1e-12,
     max_step_burn_s=5.0,
-    earth=EarthJ2()
+    earth=EarthJ2(),
+    environment_config=None
 ):
     burn_duration_s = finite_burn_duration_s(
         delta_v_km_s=delta_v_km_s,
@@ -632,7 +878,8 @@ def apply_finite_burn_to_chaser(
             burn_dir_eci=burn_dir_eci,
             thrust_N=thrust_N,
             isp_s=isp_s,
-            earth=earth
+            earth=earth,
+            environment_config=environment_config
         ),
         t_span=(0.0, burn_duration_s),
         y0=y_aug_0,
@@ -811,6 +1058,7 @@ def run_j2_polar_hohmann_rendezvous(
     wait_sample_step_s=60.0,
     closest_sample_count=1200,
     desired_rel_lvlh=None,
+    environment_config=None,
     verbose=True,
     earth=EarthJ2()
 ):
@@ -877,6 +1125,7 @@ def run_j2_polar_hohmann_rendezvous(
         delta_v = defaults["delta_v_1_km_s"]
 
     burn_model = normalize_burn_model(burn_model)
+    environment_config = resolve_environment_config(environment_config)
 
     if desired_rel_lvlh is None:
         desired_rel_lvlh = np.array([0, 0, 0])
@@ -919,7 +1168,13 @@ def run_j2_polar_hohmann_rendezvous(
             max_wait_time_s = 2.0 * synodic_period
 
         sol_wait = solve_ivp(
-            fun=lambda t, y: target_chaser_ode_j2(t, y, earth),
+            fun=lambda t, y: target_chaser_ode_j2(
+                t=t,
+                y=y,
+                earth=earth,
+                environment_config=environment_config,
+                chaser_mass_kg=initial_mass_kg
+            ),
             t_span=(0.0, max_wait_time_s),
             y0=y0,
             method="DOP853",
@@ -979,7 +1234,8 @@ def run_j2_polar_hohmann_rendezvous(
             rtol=rtol,
             atol=atol,
             max_step_burn_s=max_step_burn_s,
-            earth=earth
+            earth=earth,
+            environment_config=environment_config
         )
         y_burn_plus = burn_result["y_plus"]
         burn_duration_s = burn_result["burn_duration_s"]
@@ -997,7 +1253,13 @@ def run_j2_polar_hohmann_rendezvous(
         post_burn_duration_s = 1.5 * defaults["transfer_time_s"]
 
     sol_transfer = solve_ivp(
-        fun=lambda t, y: target_chaser_ode_j2(t, y, earth),
+        fun=lambda t, y: target_chaser_ode_j2(
+            t=t,
+            y=y,
+            earth=earth,
+            environment_config=environment_config,
+            chaser_mass_kg=final_mass_kg
+        ),
         t_span=(0.0, post_burn_duration_s),
         y0=y_burn_plus,
         method="DOP853",
@@ -1031,8 +1293,10 @@ def run_j2_polar_hohmann_rendezvous(
             "isp_s": isp_s,
             "initial_mass_kg": initial_mass_kg,
             "initial_phase_angle_rad": initial_phase_angle,
-            "initial_phase_angle_deg": np.degrees(initial_phase_angle)
+            "initial_phase_angle_deg": np.degrees(initial_phase_angle),
+            "environment_config": environment_config
         },
+        "environment": environment_config,
         "non_j2_hohmann_reference": defaults,
         "burn": {
             "burn_model": burn_model,
@@ -1079,6 +1343,9 @@ def run_j2_polar_hohmann_rendezvous(
         print()
         print("[Input actually used]")
         print(f"Burn model                    : {burn_model}")
+        drag = environment_config["atmospheric_drag"]
+        drag_status = "ON" if drag["enabled"] and drag["model"] != "off" else "OFF"
+        print(f"Atmospheric drag              : {drag_status} ({drag['model']})")
         print(f"Phase angle                   : {phase_angle:.10f} rad")
         print(f"                              : {np.degrees(phase_angle):.6f} deg")
         print(f"Delta-V                       : {delta_v:.10f} km/s")

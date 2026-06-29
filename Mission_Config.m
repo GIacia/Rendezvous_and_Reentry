@@ -1,54 +1,142 @@
 function sys = Mission_Config()
-    % 환경 변수
-    sys.mu = 3.986004418e14;   % 지구 중력 상수 [m^3/s^2]
-    sys.Re = 6378137;          % 지구 적도 반지름 [m]
-    sys.J2 = 1.08263e-3;       % J2 Perturbation 계수
-    % sys.J2 = 0;       % J2 Perturbation 계수 test
-    sys.g0 = 9.80665;          % 표준 중력 가속도 [m/s^2]
+    % Environment constants.
+    sys.mu = 3.986004418e14;   % Earth gravitational parameter [m^3/s^2]
+    sys.Re = 6378137;          % Earth equatorial radius [m]
+    sys.J2 = 1.08263e-3;       % J2 coefficient
+    % sys.J2 = 0;              % Set to zero for two-body debugging.
+    sys.g0 = 9.80665;          % Standard gravity [m/s^2]
 
-    % 위성 제원 (Target & Chaser)
+    % Spacecraft properties.
     sys.Target_Mass = 2000;    % [kg]
-    sys.Chaser_Mass_Init = 2000; % 초기 질량 (연료 포함) [kg]
-    sys.Inertia = diag([800, 800, 600]); % 관성 모멘트 [kg*m^2]
-    
-    % 궤도 초기 조건
+    sys.Chaser_Mass_Init = 2000; % Initial wet mass [kg]
+    sys.Inertia = diag([800, 800, 600]); % Moment of inertia [kg*m^2]
+
+    % Orbit and mission altitudes.
     sys.h_target = 500e3;      % 500 km
     sys.h_insert = 300e3;      % 300 km
     sys.h_wait   = 495e3;      % 495 km (Waiting Point)
     sys.h_reentry = 200e3;     % 200 km
-    sys.reentry_flight_path_angle = 4 * pi/180;        % 대기권(120km) 진입 비행경로각 Flight Path Angle 
-    sys.inc = pi/2;            % 극궤도 (90 deg)
-    sys.phase = pi * (1 - ((sys.Re + (sys.h_insert + sys.h_wait) * 500)/(sys.Re + sys.h_wait * 1000))^1.5); % 호만 전이 phase angle, ohne J2 perturbation
-    
-    % 추진 시스템 사양
-    sys.Isp = 200;             % 비추력 [s]
-    sys.Thrust_Impulsive = 300;% 고추력기 [N]
+    sys.reentry_flight_path_angle = 4 * pi/180; % 120 km interface FPA magnitude [rad]
+    sys.inc = pi/2;            % Polar orbit inclination [rad]
+
+    r_insert = sys.Re + sys.h_insert;
+    r_wait = sys.Re + sys.h_wait;
+    a_transfer = 0.5 * (r_insert + r_wait);
+    sys.phase = pi * (1 - (a_transfer / r_wait)^1.5); % two-body Hohmann phase angle [rad]
+
+    % Propulsion model.
+    sys.Isp = 200;             % Specific impulse [s]
+    sys.Thrust_Impulsive = 300;% High-thrust finite-burn engine [N]
 
     % Maneuver execution options.
     % default_burn_model: "IMPULSIVE" preserves the legacy instantaneous
     % delta-V behavior. Use "FINITE_BURN" to spread the same delta-V vector
     % over a short, high-thrust burn.
-    sys.maneuver.default_burn_model = "IMPULSIVE";
+    sys.maneuver.default_burn_model = "FINITE_BURN";
     sys.maneuver.direction_mode = "LOCAL_TANGENTIAL_RADIAL";
     sys.maneuver.finite_burn_thrust = sys.Thrust_Impulsive; % [N]
     sys.maneuver.finite_burn_isp = sys.Isp;                 % [s]
     sys.maneuver.finite_burn_dt = 0.1;                      % [s]
     sys.maneuver.max_single_burn_duration = 120.0;          % [s]
     sys.maneuver.max_single_burn_delta_v = inf;             % [m/s]
-    
-    % 노이즈 및 불확실성 모델 (Gaussian Noise 1-sigma), 잠정적 폐기
-    sys.noise.pos = 2.0;       % 위치 센서 노이즈 [m]
-    sys.noise.vel = 0.05;      % 속도 센서 노이즈 [m/s]
-    sys.noise.att = 0.001;     % 자세(Quaternion) 노이즈
-    sys.noise.gyro = 1e-4;     % 각속도 노이즈 [rad/s]
-    sys.noise.thrust_err = 0.02; % 추력 오차 (2%)
-    
-    % 제어 게인 (PD Controller)
+
+    % Environment model options.
+    % atmospheric_drag.enabled = false preserves the previous J2-only
+    % propagation. Set enabled = true and model = "ISA76" to add drag.
+    sys.environment.atmospheric_drag.enabled = false;
+    sys.environment.atmospheric_drag.model = "ISA76";
+    sys.environment.atmospheric_drag.use_matlab_atmosisa = true;
+    sys.environment.atmospheric_drag.co_rotate_atmosphere = true;
+    sys.environment.atmospheric_drag.earth_rotation_rad_s = 7.2921159e-5;
+    sys.environment.atmospheric_drag.chaser_cd = 2.2;
+    sys.environment.atmospheric_drag.chaser_area_m2 = 4.0;
+    sys.environment.atmospheric_drag.target_cd = 2.2;
+    sys.environment.atmospheric_drag.target_area_m2 = 4.0;
+
+    % Atmospheric re-entry vehicle options.
+    % Shape dimensions come from the supplied re-entry vehicle PPT file.
+    % L/D lookup values are approximate digitizations from the slide images.
+    sys.reentry_vehicle.selected_shape = "COMPROMISE";
+    sys.reentry_vehicle.dt = 0.5;                    % [s]
+    sys.reentry_vehicle.max_time = 2500;             % [s]
+    sys.reentry_vehicle.terminal_altitude = 20e3;    % [m]
+    sys.reentry_vehicle.lift_enabled = true;
+    sys.reentry_vehicle.bank_angle_deg = 0;
+    sys.reentry_vehicle.los_margin_altitude = 0;     % [m] Earth-limb clearance margin
+    sys.reentry_vehicle.sutton_graves_k = 1.83e-4;   % Earth entry, W/m^2 with SI inputs
+
+    ld_aoa_deg = [0 2 5 8 10 12 15 18 20 22 25 30 35 40 45 50 55 60 65 70 75 80];
+
+    sys.reentry_vehicle.shapes.COMPROMISE = struct( ...
+        'name', "Compromise", ...
+        'length_m', 4.486, ...
+        'max_width_m', 1.944, ...
+        'max_height_m', 1.296, ...
+        'base_diameter_m', 1.753, ...
+        'nose_radius_m', 0.054, ...
+        'aspect_ratio', 2.559, ...
+        'reference_area_m2', pi * 1.944 * 1.296 / 4, ...
+        'cd', 1.20, ...
+        'default_aoa_deg', 21, ...
+        'ld_aoa_deg', ld_aoa_deg, ...
+        'ld_values', [0.54 0.60 0.72 0.86 0.96 1.04 1.12 1.18 1.19 1.19 1.17 1.09 0.99 0.89 0.78 0.67 0.57 0.48 0.39 0.30 0.21 0.12]);
+
+    sys.reentry_vehicle.shapes.HEATLOAD_MIN = struct( ...
+        'name', "HeatLoad Min", ...
+        'length_m', 4.485, ...
+        'max_width_m', 2.137, ...
+        'max_height_m', 1.339, ...
+        'base_diameter_m', 1.809, ...
+        'nose_radius_m', 0.054, ...
+        'aspect_ratio', 2.480, ...
+        'reference_area_m2', pi * 2.137 * 1.339 / 4, ...
+        'cd', 1.20, ...
+        'default_aoa_deg', 21, ...
+        'ld_aoa_deg', ld_aoa_deg, ...
+        'ld_values', [0.52 0.59 0.72 0.86 0.95 1.03 1.11 1.16 1.19 1.19 1.18 1.10 1.00 0.90 0.79 0.68 0.58 0.49 0.40 0.31 0.22 0.13]);
+
+    sys.reentry_vehicle.shapes.PAYLOAD_MAX = struct( ...
+        'name', "Payload Max", ...
+        'length_m', 4.484, ...
+        'max_width_m', 1.953, ...
+        'max_height_m', 1.339, ...
+        'base_diameter_m', 1.808, ...
+        'nose_radius_m', 0.070, ...
+        'aspect_ratio', 2.480, ...
+        'reference_area_m2', pi * 1.953 * 1.339 / 4, ...
+        'cd', 1.20, ...
+        'default_aoa_deg', 22, ...
+        'ld_aoa_deg', ld_aoa_deg, ...
+        'ld_values', [0.42 0.48 0.58 0.70 0.80 0.90 1.02 1.07 1.09 1.09 1.09 1.04 0.96 0.87 0.77 0.67 0.57 0.48 0.38 0.29 0.20 0.13]);
+
+    sys.reentry_vehicle.shapes.TPS_MIN = struct( ...
+        'name', "TPS Min", ...
+        'length_m', 4.477, ...
+        'max_width_m', 1.944, ...
+        'max_height_m', 1.011, ...
+        'base_diameter_m', 1.321, ...
+        'nose_radius_m', 0.052, ...
+        'aspect_ratio', 3.390, ...
+        'reference_area_m2', pi * 1.944 * 1.011 / 4, ...
+        'cd', 1.20, ...
+        'default_aoa_deg', 17, ...
+        'ld_aoa_deg', ld_aoa_deg, ...
+        'ld_values', [0.40 0.62 0.95 1.25 1.47 1.61 1.65 1.64 1.61 1.58 1.50 1.34 1.17 1.01 0.88 0.74 0.62 0.51 0.41 0.32 0.23 0.14]);
+
+    % Uncertainty placeholders. Active deterministic runs leave these off
+    % unless a maneuver helper explicitly enables thrust noise.
+    sys.noise.pos = 2.0;       % Position sensor noise [m]
+    sys.noise.vel = 0.05;      % Velocity sensor noise [m/s]
+    sys.noise.att = 0.001;     % Quaternion attitude noise
+    sys.noise.gyro = 1e-4;     % Angular-rate noise [rad/s]
+    sys.noise.thrust_err = 0.02; % Thrust magnitude error, 1-sigma fraction
+
+    % Legacy controller gains retained for future 6-DOF controller work.
     sys.GNC.Kp_pos = 0.05; sys.GNC.Kd_pos = 0.8;
     sys.GNC.Kp_att = 50;   sys.GNC.Kd_att = 100;
 
     % Capture Point Settings
-    sys.capture.r_rel0 = [-5000; 0; 0];   % LVLH 기준 5 km R-bar below
-    sys.capture.v_rel0 = [0; 0; 0];       % capture point에서 정지 상대속도
-    sys.capture.TOF = 1800;               % Phase 1 종료 후 capture까지 30분
+    sys.capture.r_rel0 = [-5000; 0; 0];   % 5 km R-bar hold point in LVLH
+    sys.capture.v_rel0 = [0; 0; 0];       % Relative velocity at capture
+    sys.capture.TOF = 1800;               % Nominal post-Phase-1 capture coast [s]
 end

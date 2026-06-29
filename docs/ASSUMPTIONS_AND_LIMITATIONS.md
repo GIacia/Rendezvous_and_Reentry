@@ -8,13 +8,14 @@ Currently included:
 
 - central Earth gravity
 - J2 perturbation
+- optional atmospheric drag with an ISA76-style standard-atmosphere density model
+- 120 km atmospheric-entry propagation with simplified drag/lift, heat-flux, and line-of-sight diagnostics
 
 Currently neglected:
 
-- atmospheric drag
 - solar radiation pressure
 - third-body perturbations
-- Earth orientation / full Earth-fixed frame effects
+- full Earth orientation / Earth-fixed frame effects beyond simple co-rotating atmosphere velocity for drag
 - higher-order geopotential terms
 
 This means the code is appropriate for **conceptual mission studies and controller debugging**, but not for high-precision orbit determination or operational conjunction analysis.
@@ -37,6 +38,14 @@ But it is limited for:
 - finite-burn attitude-coupled maneuver analysis
 - exact burn reconstruction
 - high-fidelity thruster execution modeling
+
+The atmospheric-entry stage is also simplified:
+
+- the re-entry vehicle keeps a fixed AoA and bank angle during entry
+- Cd is assumed constant because the supplied PPT provides geometry and L/D trends, not full Cd/Cl tables
+- L/D curves are approximate digitizations from slide images
+- heat flux uses a Sutton-Graves stagnation-point estimate
+- communication is checked as geometric Earth-limb line of sight only; plasma blackout physics is not modeled yet
 
 ---
 

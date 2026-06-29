@@ -1,14 +1,19 @@
-# Examples Folder
+# Results Folder
 
-This folder is reserved for future example scripts, such as:
+Use this folder for generated outputs such as:
 
-- alternative mission configurations
-- Monte Carlo test cases
-- controller gain sweeps
-- Lambert vs Hohmann comparison runs
+- exported figures
+- trajectory snapshots
+- mission budget tables
+- MATLAB `.mat` result files
 
-The current main executable remains:
+Suggested convention:
 
-```matlab
-Main_Mission_Simulator
+```text
+results/
+|-- figures/
+|-- tables/
+`-- mat/
 ```
+
+If you later start exporting large generated data, consider ignoring those generated subfolders in `.gitignore`.

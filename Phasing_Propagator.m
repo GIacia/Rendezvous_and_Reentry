@@ -1,6 +1,6 @@
 function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagator(sys, X0, target_r, mode, custom_params, X_target0, pmode)
     % Phasing_Propagator
-    % 3-DOF impulsive phasing propagator with optional target co-propagation.
+    % 3-DOF phasing propagator with optional target co-propagation.
     %
     % HOHMANN mode is now target-aware if X_target0 is supplied:
     %   1) wait on the insertion orbit until a J2-aware phase search says the
@@ -43,42 +43,8 @@ function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagato
         dV_used = dV_used + dV;
         hist = append_hist(hist, sub_hist);
 
-    elseif mode == "LAMBERT"
-        TOF = custom_params.TOF;
-        target_pos = custom_params.target_pos;
-        fprintf('   * Lambert Problem 해석 (TOF: %.1f 초)...\n', TOF);
-
-        [v1_req, ~] = solve_lambert(X_state(1:3), target_pos, TOF, sys.mu);
-
-        dV1_vec = v1_req - X_state(4:6);
-        dV1_mag_cmd = norm(dV1_vec);
-        dV1_mag_actual = dV1_mag_cmd * (1 + randn * sys.noise.thrust_err);
-        if dV1_mag_cmd > 0
-            X_state(4:6) = X_state(4:6) + dV1_vec/dV1_mag_cmd * dV1_mag_actual;
-        end
-        X_state(7) = X_state(7) * exp(-dV1_mag_actual / (sys.Isp * sys.g0));
-        dV_used = dV_used + dV1_mag_actual;
-
-        dt = get_param(custom_params, 'dt_transfer', 10);
-        [X_state, X_target_state, sub_hist] = propagate_for_duration(X_state, X_target_state, sys, TOF, dt, 0);
-        hist = append_hist(hist, sub_hist);
-
-        v_current = X_state(4:6);
-        v_circular = sqrt(sys.mu / target_r);
-        h_vec = cross(X_state(1:3), v_current);
-        v_target_dir = cross(h_vec, X_state(1:3));
-        v_target_req = v_target_dir / norm(v_target_dir) * v_circular;
-
-        dV2_vec = v_target_req - v_current;
-        dV2_mag_cmd = norm(dV2_vec);
-        dV2_mag_actual = dV2_mag_cmd * (1 + randn * sys.noise.thrust_err);
-        if dV2_mag_cmd > 0
-            X_state(4:6) = X_state(4:6) + dV2_vec/dV2_mag_cmd * dV2_mag_actual;
-        end
-        X_state(7) = X_state(7) * exp(-dV2_mag_actual / (sys.Isp * sys.g0));
-        dV_used = dV_used + dV2_mag_actual;
     else
-        error('Unknown phasing mode: %s', mode);
+        error('Unknown phasing mode: %s. Use "CUSTOM_IMPULSE", "HOHMANN", or "MULTI_HOHMANN".', mode);
     end
 
     fuel_used = m0 - X_state(7);
@@ -290,8 +256,6 @@ function [X_ch, X_t, hist, capture_time, miss, rel_lvlh, rel_vel_lvlh, reached_t
 
     hist = init_hist();
     elapsed = 0;
-    reached_tol = false;
-
     [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
     d_now = norm(rel_lvlh - desired_rel_lvlh);
 
@@ -478,11 +442,12 @@ function dX = orbit_dynamics_fixed_thrust(X, sys, thrust_N, Isp, burn_dir_eci)
     a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1);
                       (r(2)/r_norm)*(5*z2 - 1);
                       (r(3)/r_norm)*(5*z2 - 3) ];
+    a_drag = Atmospheric_Drag_Acceleration(r, v, m, sys, "chaser");
 
     a_thrust = burn_dir_eci(:) / norm(burn_dir_eci) * (thrust_N / m);
     dm = -thrust_N / (Isp * sys.g0);
 
-    dX = [v; a_g + a_j2 + a_thrust; dm];
+    dX = [v; a_g + a_j2 + a_drag + a_thrust; dm];
 end
 
 function burn_dir = custom_burn_direction(X_st, gamma, direction_mode)
@@ -530,7 +495,11 @@ end
 
 function model = normalize_burn_model(value)
     model = upper(string(value));
-    if model == "FINITE" || model == "FINITE_BURN" || model == "FINITE_IMPULSE" || model == "CONTINUOUS"
+    if model == "CONTINUOUS"
+        error('Burn model "CONTINUOUS" is not supported. Use "FINITE_BURN" for a short finite-duration execution of an impulsive delta-V.');
+    end
+
+    if model == "FINITE" || model == "FINITE_BURN" || model == "FINITE_IMPULSE"
         model = "FINITE_BURN";
     elseif model == "INSTANT" || model == "INSTANTANEOUS" || model == "CUSTOM_IMPULSE"
         model = "IMPULSIVE";
@@ -755,8 +724,6 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
 
     if pmode == 3
         max_wait = 360;
-    else
-        max_wait = max_wait;
     end
 
 
@@ -772,7 +739,7 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
     TOF = pi * sqrt(a_trans^3 / sys.mu); % Keplerian first guess; actual transfer is numerically propagated with J2
 
     if ~isempty(X_target_st)
-        fprintf('   * J2-aware Hohmann phase search 시작...\n');
+        fprintf('   * J2-aware Hohmann phase search started...\n');
         best_wait = find_best_wait_time(sys, X_st, X_target_st, target_r, TOF, desired_rel_lvlh, ...
                                         dt_scan, max_wait, refine_span, refine_step, dt_transfer, pmode);
         fprintf('     - selected wait time: %.1f s (%.2f orbits at insertion altitude)\n', ...
@@ -780,8 +747,6 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
 
         [X_st, X_target_st, wait_hist] = propagate_for_duration(X_st, X_target_st, sys, best_wait, dt_wait, 0);
         sub_hist = append_hist(sub_hist, wait_hist);
-    else
-        best_wait = 0;
     end
 
     % First Hohmann maneuver at the numerically selected epoch.
@@ -807,7 +772,7 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
         fprintf('     - capture LVLH position: [%+.1f, %+.1f, %+.1f] m\n', rel_lvlh(1), rel_lvlh(2), rel_lvlh(3));
         fprintf('     - capture error from desired: %.1f m, rel-speed: %.4f m/s\n', norm(miss), norm(rel_vel_lvlh));
         if norm(miss) > pos_tol
-            fprintf('     - warning: capture error is larger than %.0f m. Increase max_wait/refinement or use Lambert targeting.\n', pos_tol);
+            fprintf('     - warning: capture error is larger than %.0f m. Increase max_wait/refinement or retune CUSTOM_IMPULSE parameters.\n', pos_tol);
         end
     end
 end
@@ -899,7 +864,6 @@ end
 
 function leg_count = choose_multi_hohmann_leg_count(sys, X_st, target_r, maneuver_opts)
     max_legs = 50;
-    leg_count = 1;
 
     for n = 1:max_legs
         radii = linspace(norm(X_st(1:3)), target_r, n + 1);
@@ -991,7 +955,7 @@ function [best_wait, best_metric] = scan_wait_candidates(sys, X_ch0, X_t0, targe
             continue
         end
 
-        [rel_lvlh, rel_vel_lvlh] = predict_hohmann_capture(sys, X_ch_wait, X_t_wait, target_r, TOF, dt_transfer);
+        [rel_lvlh, ~] = predict_hohmann_capture(sys, X_ch_wait, X_t_wait, target_r, TOF, dt_transfer);
         pos_error = norm(rel_lvlh - desired_rel_lvlh);
         metric = pos_error;
 
@@ -1079,7 +1043,7 @@ function dv_vec = hohmann_departure_delta_v_vec(X_st, target_r, sys)
     dv_vec = dV_cmd * X_st(4:6) / v_current;
 end
 
-function dv_vec_cmd = circularization_delta_v_vec(X_st, X_target_st, sys)
+function dv_vec_cmd = circularization_delta_v_vec(X_st, ~, sys)
     r = X_st(1:3);
     v = X_st(4:6);
     r_norm = norm(r);
@@ -1091,7 +1055,7 @@ function dv_vec_cmd = circularization_delta_v_vec(X_st, X_target_st, sys)
 end
 
 function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, ~, sys, use_noise)
-    if nargin < 4, use_noise = true; end
+    if nargin < 5 || isempty(use_noise), use_noise = true; end
     dv_vec = hohmann_departure_delta_v_vec(X_st, target_r, sys);
     dV_cmd = norm(dv_vec);
     dV_mag = abs(dV_cmd);
@@ -1104,8 +1068,8 @@ function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, ~, sys
     X_st(7) = X_st(7) * exp(-dV_mag / (sys.Isp * sys.g0));
 end
 
-function [X_st, dV_mag] = apply_circularization_impulse(X_st, target_r, X_target_st, sys, use_noise)
-    if nargin < 3, use_noise = true; end
+function [X_st, dV_mag] = apply_circularization_impulse(X_st, ~, X_target_st, sys, use_noise)
+    if nargin < 5 || isempty(use_noise), use_noise = true; end
     dv_vec_cmd = circularization_delta_v_vec(X_st, X_target_st, sys);
     dV_cmd = norm(dv_vec_cmd);
     dV_mag = dV_cmd;
@@ -1165,6 +1129,7 @@ function dX = orbit_dynamics_target(X, sys)
     r = X(1:3);
     v = X(4:6);
     r_norm = norm(r);
+    target_mass = get_sys_field(sys, 'Target_Mass', 2000.0);
 
     a_g = -sys.mu / r_norm^3 * r;
     z2 = (r(3)/r_norm)^2;
@@ -1172,8 +1137,9 @@ function dX = orbit_dynamics_target(X, sys)
     a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1);
                       (r(2)/r_norm)*(5*z2 - 1);
                       (r(3)/r_norm)*(5*z2 - 3) ];
+    a_drag = Atmospheric_Drag_Acceleration(r, v, target_mass, sys, "target");
 
-    dX = [v; a_g + a_j2];
+    dX = [v; a_g + a_j2 + a_drag];
 end
 
 function dX = orbit_dynamics(X, sys, thrust_mag, dir)
@@ -1183,13 +1149,14 @@ function dX = orbit_dynamics(X, sys, thrust_mag, dir)
     z2 = (r(3)/r_norm)^2;
     factor = 1.5 * sys.J2 * (sys.mu/r_norm^2) * (sys.Re/r_norm)^2;
     a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1); (r(2)/r_norm)*(5*z2 - 1); (r(3)/r_norm)*(5*z2 - 3) ];
+    a_drag = Atmospheric_Drag_Acceleration(r, v, m, sys, "chaser");
     a_thrust = [0;0;0]; dm = 0;
     if thrust_mag > 0
         actual_thrust = thrust_mag;
         a_thrust = (v / v_norm) * dir * (actual_thrust / m);
         dm = -actual_thrust / (sys.Isp * sys.g0);
     end
-    dX = [v; a_g + a_j2 + a_thrust; dm];
+    dX = [v; a_g + a_j2 + a_drag + a_thrust; dm];
 end
 
 %% --- Helper: LVLH relative state ---
@@ -1289,29 +1256,4 @@ function value = get_param(s, name, default_value)
     else
         value = default_value;
     end
-end
-
-%% --- Helper: Universal Variable Lambert Solver ---
-function [v1, v2] = solve_lambert(r1, r2, TOF, mu)
-    r1_mag = norm(r1); r2_mag = norm(r2);
-    cos_dnu = dot(r1, r2) / (r1_mag * r2_mag);
-    A = sqrt(r1_mag * r2_mag * (1 + cos_dnu));
-    if A == 0, error('궤도가 180도입니다. Lambert 솔버 예외 처리 필요.'); end
-    z = 0; C = 1/2; S = 1/6;
-    for i = 1:100
-        y = r1_mag + r2_mag - A * (1 - z*S) / sqrt(C);
-        x = sqrt(y / C);
-        t_calc = (x^3 * S + A * sqrt(y)) / sqrt(mu);
-        if abs(t_calc - TOF) < 1e-5, break; end
-        z = z + (TOF - t_calc) * 0.1;
-        if z > 0
-            S = (sqrt(z) - sin(sqrt(z))) / (sqrt(z))^3; C = (1 - cos(sqrt(z))) / z;
-        elseif z < 0
-            S = (sinh(sqrt(-z)) - sqrt(-z)) / (sqrt(-z))^3; C = (cosh(sqrt(-z)) - 1) / (-z);
-        else
-            S = 1/6; C = 1/2;
-        end
-    end
-    f = 1 - y/r1_mag; g = A * sqrt(y/mu); g_dot = 1 - y/r2_mag;
-    v1 = (r2 - f*r1) / g; v2 = (g_dot*r2 - r1) / g;
 end

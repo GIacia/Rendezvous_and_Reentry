@@ -1,3 +1,7 @@
+import argparse
+import json
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 DESIRED_REL_LVLH = np.array([0.0, -5.0, 0.0])
@@ -21,6 +25,21 @@ DEFAULT_SCENARIO_CONFIG = {
     "closest_sample_count": 1200,
 }
 
+DEFAULT_ENVIRONMENT_CONFIG = {
+    "atmospheric_drag": {
+        "enabled": False,
+        "model": "ISA76",
+        "use_matlab_atmosisa": True,
+        "co_rotate_atmosphere": True,
+        "earth_rotation_rad_s": 7.2921159e-5,
+        "chaser_cd": 2.2,
+        "chaser_area_m2": 4.0,
+        "target_cd": 2.2,
+        "target_area_m2": 4.0,
+        "target_mass_kg": 2000.0
+    }
+}
+
 from J2PolarHohmann import (
     run_j2_polar_hohmann_rendezvous,
     non_j2_hohmann_defaults
@@ -29,10 +48,10 @@ from J2PolarHohmann import (
 
 def make_maneuver_config(
     burn_model="impulsive",
-    thrust_N=1.0,
+    thrust_N=300.0,
     isp_s=200.0,
     initial_mass_kg=2000.0,
-    max_step_burn_s=5.0
+    max_step_burn_s=0.5
 ):
     return {
         "burn_model": burn_model,
@@ -78,6 +97,152 @@ def resolve_scenario_config(scenario_config=None):
         config.update(scenario_config)
     config["desired_rel_lvlh"] = np.array(config["desired_rel_lvlh"], dtype=float)
     return config
+
+
+def make_environment_config(
+    atmospheric_drag="off",
+    chaser_cd=2.2,
+    chaser_area_m2=4.0,
+    target_cd=2.2,
+    target_area_m2=4.0,
+    target_mass_kg=2000.0,
+    co_rotate_atmosphere=True,
+    use_matlab_atmosisa=True
+):
+    model = str(atmospheric_drag).strip().lower()
+    enabled = model not in {"off", "none", "disabled", "0"}
+    if not enabled:
+        model = "ISA76"
+
+    return {
+        "atmospheric_drag": {
+            "enabled": enabled,
+            "model": model.upper(),
+            "use_matlab_atmosisa": bool(use_matlab_atmosisa),
+            "co_rotate_atmosphere": bool(co_rotate_atmosphere),
+            "earth_rotation_rad_s": 7.2921159e-5,
+            "chaser_cd": chaser_cd,
+            "chaser_area_m2": chaser_area_m2,
+            "target_cd": target_cd,
+            "target_area_m2": target_area_m2,
+            "target_mass_kg": target_mass_kg
+        }
+    }
+
+
+def resolve_environment_config(environment_config=None):
+    config = {
+        "atmospheric_drag": DEFAULT_ENVIRONMENT_CONFIG["atmospheric_drag"].copy()
+    }
+    if environment_config is None:
+        return config
+
+    if "atmospheric_drag" in environment_config:
+        source_drag = environment_config["atmospheric_drag"]
+        explicit_enabled = "enabled" in source_drag
+        config["atmospheric_drag"].update(source_drag)
+    else:
+        explicit_enabled = "enabled" in environment_config
+        config["atmospheric_drag"].update(environment_config)
+
+    model = str(config["atmospheric_drag"].get("model", "ISA76")).upper()
+    if not explicit_enabled and model not in {"OFF", "NONE", "DISABLED", "0"}:
+        config["atmospheric_drag"]["enabled"] = True
+
+    enabled = config["atmospheric_drag"].get("enabled", False)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() in {"true", "1", "yes", "on"}
+    config["atmospheric_drag"]["enabled"] = bool(enabled)
+    config["atmospheric_drag"]["model"] = model
+    return config
+
+
+def to_jsonable(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating, np.integer)):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(v) for v in value]
+    return value
+
+
+def matlab_burn_model_name(burn_model):
+    model = str(burn_model).strip().lower()
+    if model == "continuous":
+        raise ValueError(
+            "burn_model='continuous' is not supported. "
+            "Use 'finite_burn' for a short finite-duration execution of an impulsive delta-V."
+        )
+    if model in {"finite", "finite_burn", "finite_impulse"}:
+        return "FINITE_BURN"
+    if model in {"impulsive", "instant", "instantaneous", "custom_impulse"}:
+        return "IMPULSIVE"
+    raise ValueError("burn_model must be 'impulsive' or 'finite_burn'.")
+
+
+def get_optimized_delta_v_m_s(params):
+    if "delta_v_1_m_s" in params:
+        return params["delta_v_1_m_s"]
+    return params["delta_v_m_s"]
+
+
+def build_matlab_mission_config(output, phase1_mode="CUSTOM_IMPULSE"):
+    scenario = resolve_scenario_config(output.get("scenario_config"))
+    maneuver = resolve_maneuver_config(output.get("maneuver_config"))
+    environment = resolve_environment_config(output.get("environment_config"))
+    params = output["optimized_parameters"]
+    final_result = output.get("final_propagation_result") or {}
+    burn = final_result.get("burn", {})
+
+    return {
+        "schema_version": 1,
+        "source": "J2PolarHohmannShooting.py",
+        "scenario": {
+            "h_chaser_km": scenario["h_chaser_km"],
+            "h_target_km": scenario["h_target_km"],
+            "initial_phase_angle_deg": scenario["initial_phase_angle"],
+            "initial_chaser_angle_deg": scenario["initial_chaser_angle"]
+        },
+        "phase1": {
+            "mode": phase1_mode,
+            "burn_model": matlab_burn_model_name(maneuver["burn_model"]),
+            "phase_angle_deg": params["phase_angle_deg"],
+            "delta_v_m_s": get_optimized_delta_v_m_s(params),
+            "gamma_deg": params["gamma_deg"],
+            "desired_rel_lvlh_m": (scenario["desired_rel_lvlh"] * 1000.0).tolist()
+        },
+        "maneuver": {
+            "finite_burn_thrust_N": maneuver["thrust_N"],
+            "finite_burn_isp_s": maneuver["isp_s"],
+            "finite_burn_dt_s": maneuver["max_step_burn_s"],
+            "initial_mass_kg": maneuver["initial_mass_kg"]
+        },
+        "environment": environment,
+        "optimizer": {
+            "success": bool(output.get("success", True)),
+            "message": str(output.get("message", "")),
+            "objective_mode": output.get("objective_mode", ""),
+            "final_distance_km": output.get("final_distance_km", output.get("best_distance_km")),
+            "terminal_relative_speed_m_s": output.get("terminal_relative_speed_m_s"),
+            "total_two_impulse_delta_v_m_s": output.get("total_two_impulse_delta_v_m_s"),
+            "burn_duration_s": burn.get("burn_duration_s"),
+            "delivered_delta_v_m_s": burn.get("delivered_delta_v_m_s")
+        }
+    }
+
+
+def save_matlab_mission_config(output, path="configs/latest_python_solution.json", phase1_mode="CUSTOM_IMPULSE"):
+    config = build_matlab_mission_config(output, phase1_mode=phase1_mode)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(to_jsonable(config), indent=2, sort_keys=True),
+        encoding="utf-8"
+    )
+    return path
 
 
 # ============================================================
@@ -137,7 +302,13 @@ def sanitize_parameters(p):
 # One simulation evaluation
 # ============================================================
 
-def evaluate_rendezvous_error(p, verbose=False, maneuver_config=None, scenario_config=None):
+def evaluate_rendezvous_error(
+    p,
+    verbose=False,
+    maneuver_config=None,
+    scenario_config=None,
+    environment_config=None
+):
     """
     Runs the J2 propagator once.
 
@@ -155,6 +326,7 @@ def evaluate_rendezvous_error(p, verbose=False, maneuver_config=None, scenario_c
     p = sanitize_parameters(p)
     maneuver_config = resolve_maneuver_config(maneuver_config)
     scenario_config = resolve_scenario_config(scenario_config)
+    environment_config = resolve_environment_config(environment_config)
 
     phase_angle_deg = p[0]
     delta_v_km_s = p[1] / 1000.0
@@ -173,6 +345,7 @@ def evaluate_rendezvous_error(p, verbose=False, maneuver_config=None, scenario_c
         post_burn_duration_s=scenario_config["post_burn_duration_s"],
         closest_sample_count=scenario_config["closest_sample_count"],
         desired_rel_lvlh=scenario_config["desired_rel_lvlh"],
+        environment_config=environment_config,
         verbose=False,
         **maneuver_config
     )
@@ -203,7 +376,8 @@ def finite_difference_jacobian(
     p,
     finite_steps=np.array([0.01, 0.01, 0.01]),
     maneuver_config=None,
-    scenario_config=None
+    scenario_config=None,
+    environment_config=None
 ):
     """
     Numerically computes Jacobian:
@@ -223,7 +397,8 @@ def finite_difference_jacobian(
     residual_0, distance_0, result_0 = evaluate_rendezvous_error(
         p,
         maneuver_config=maneuver_config,
-        scenario_config=scenario_config
+        scenario_config=scenario_config,
+        environment_config=environment_config
     )
 
     m = len(residual_0)
@@ -246,12 +421,14 @@ def finite_difference_jacobian(
         residual_plus, _, _ = evaluate_rendezvous_error(
             p_plus,
             maneuver_config=maneuver_config,
-            scenario_config=scenario_config
+            scenario_config=scenario_config,
+            environment_config=environment_config
         )
         residual_minus, _, _ = evaluate_rendezvous_error(
             p_minus,
             maneuver_config=maneuver_config,
-            scenario_config=scenario_config
+            scenario_config=scenario_config,
+            environment_config=environment_config
         )
 
         J[:, j] = (residual_plus - residual_minus) / (2.0 * h)
@@ -272,6 +449,7 @@ def optimize_j2_hohmann_rendezvous(
     max_update=np.array([3.0, 20.0, 3.0]),
     maneuver_config=None,
     scenario_config=None,
+    environment_config=None,
     verbose=True
 ):
     """
@@ -305,6 +483,7 @@ def optimize_j2_hohmann_rendezvous(
     """
     maneuver_config = resolve_maneuver_config(maneuver_config)
     scenario_config = resolve_scenario_config(scenario_config)
+    environment_config = resolve_environment_config(environment_config)
 
     if p0 is None:
         p = get_default_parameter_vector(scenario_config=scenario_config)
@@ -336,7 +515,8 @@ def optimize_j2_hohmann_rendezvous(
             p,
             finite_steps=finite_steps,
             maneuver_config=maneuver_config,
-            scenario_config=scenario_config
+            scenario_config=scenario_config,
+            environment_config=environment_config
         )
 
         if distance < best_distance:
@@ -399,7 +579,8 @@ def optimize_j2_hohmann_rendezvous(
             residual_trial, distance_trial, result_trial = evaluate_rendezvous_error(
                 p_trial,
                 maneuver_config=maneuver_config,
-                scenario_config=scenario_config
+                scenario_config=scenario_config,
+                environment_config=environment_config
             )
 
             if distance_trial < distance:
@@ -424,7 +605,8 @@ def optimize_j2_hohmann_rendezvous(
     final_residual, final_distance, final_result = evaluate_rendezvous_error(
         best_p,
         maneuver_config=maneuver_config,
-        scenario_config=scenario_config
+        scenario_config=scenario_config,
+        environment_config=environment_config
     )
 
     final_output = {
@@ -440,6 +622,7 @@ def optimize_j2_hohmann_rendezvous(
         "best_residual_xz_km": final_residual,
         "maneuver_config": maneuver_config,
         "scenario_config": scenario_config,
+        "environment_config": environment_config,
         "history": history,
         "final_propagation_result": final_result
     }
@@ -538,6 +721,7 @@ def minimize_delta_v_on_zero_distance_manifold(
     stage2_verbose=True,
     maneuver_config=None,
     scenario_config=None,
+    environment_config=None,
     bounds=None,
     ftol=1e-9
 ):
@@ -585,6 +769,7 @@ def minimize_delta_v_on_zero_distance_manifold(
 
     maneuver_config = resolve_maneuver_config(maneuver_config)
     scenario_config = resolve_scenario_config(scenario_config)
+    environment_config = resolve_environment_config(environment_config)
 
     if bounds is None:
         bounds = [
@@ -606,7 +791,8 @@ def minimize_delta_v_on_zero_distance_manifold(
     residual_start, distance_start, result_start = evaluate_rendezvous_error(
         p_start,
         maneuver_config=maneuver_config,
-        scenario_config=scenario_config
+        scenario_config=scenario_config,
+        environment_config=environment_config
     )
 
     # ------------------------------------------------------------
@@ -626,6 +812,7 @@ def minimize_delta_v_on_zero_distance_manifold(
             tolerance_km=feasibility_tolerance_km,
             maneuver_config=maneuver_config,
             scenario_config=scenario_config,
+            environment_config=environment_config,
             verbose=stage1_verbose
         )
 
@@ -640,7 +827,8 @@ def minimize_delta_v_on_zero_distance_manifold(
     residual_feasible, distance_feasible, result_feasible = evaluate_rendezvous_error(
         p_feasible,
         maneuver_config=maneuver_config,
-        scenario_config=scenario_config
+        scenario_config=scenario_config,
+        environment_config=environment_config
     )
 
     if stage2_verbose:
@@ -671,7 +859,8 @@ def minimize_delta_v_on_zero_distance_manifold(
                 residual, distance, result = evaluate_rendezvous_error(
                     p_clean,
                     maneuver_config=maneuver_config,
-                    scenario_config=scenario_config
+                    scenario_config=scenario_config,
+                    environment_config=environment_config
                 )
 
                 cache[key] = {
@@ -730,7 +919,7 @@ def minimize_delta_v_on_zero_distance_manifold(
         residual = data["residual"]
 
         return residual / residual_scale_km
-    
+
     def inequality_constraints(p):
         """
         SLSQP inequality constraint:
@@ -856,6 +1045,7 @@ def minimize_delta_v_on_zero_distance_manifold(
         "objective_mode": objective_mode,
         "maneuver_config": maneuver_config,
         "scenario_config": scenario_config,
+        "environment_config": environment_config,
         "optimized_parameters": {
             "phase_angle_deg": p_final[0],
             "phase_angle_rad": np.radians(p_final[0]),
@@ -985,8 +1175,59 @@ def plot_constrained_delta_v_history(history, log_distance=True):
 # ============================================================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Optimize J2 polar rendezvous parameters and export a MATLAB mission JSON."
+    )
+    parser.add_argument(
+        "--matlab-config-out",
+        default="configs/latest_python_solution.json",
+        help="Path for the MATLAB-readable JSON config."
+    )
+    parser.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Skip plotting after optimization."
+    )
+    parser.add_argument(
+        "--burn-model",
+        default="impulsive",
+        choices=["impulsive", "finite_burn"],
+        help="Maneuver execution model used during Python optimization."
+    )
+    parser.add_argument(
+        "--atmospheric-drag",
+        default="off",
+        choices=["off", "isa76"],
+        help="Atmospheric drag model used during Python optimization and exported to MATLAB."
+    )
+    parser.add_argument(
+        "--chaser-cd",
+        type=float,
+        default=2.2,
+        help="Chaser drag coefficient."
+    )
+    parser.add_argument(
+        "--chaser-area-m2",
+        type=float,
+        default=4.0,
+        help="Chaser reference area for drag."
+    )
+    parser.add_argument(
+        "--target-cd",
+        type=float,
+        default=2.2,
+        help="Target drag coefficient."
+    )
+    parser.add_argument(
+        "--target-area-m2",
+        type=float,
+        default=4.0,
+        help="Target reference area for drag."
+    )
+    args = parser.parse_args()
+
     maneuver_config = make_maneuver_config(
-        burn_model="finite_burn",  # change to "finite_burn" for finite-burn simulation
+        burn_model=args.burn_model,
         thrust_N=300.0,
         isp_s=200.0,
         initial_mass_kg=2000.0,
@@ -1001,16 +1242,34 @@ if __name__ == "__main__":
         desired_rel_lvlh=DESIRED_REL_LVLH
     )
 
+    environment_config = make_environment_config(
+        atmospheric_drag=args.atmospheric_drag,
+        chaser_cd=args.chaser_cd,
+        chaser_area_m2=args.chaser_area_m2,
+        target_cd=args.target_cd,
+        target_area_m2=args.target_area_m2,
+        target_mass_kg=2000.0
+    )
+
     output = minimize_delta_v_on_zero_distance_manifold(
         p_start=None,
         objective_mode="two_impulse_total",
         maneuver_config=maneuver_config,
         scenario_config=scenario_config,
+        environment_config=environment_config,
         stage1_verbose=True,
         stage2_verbose=True
     )
 
-    plot_constrained_delta_v_history(
-        output["history"],
-        log_distance=True
+    config_path = save_matlab_mission_config(
+        output,
+        path=args.matlab_config_out,
+        phase1_mode="CUSTOM_IMPULSE"
     )
+    print(f"\nSaved MATLAB mission config: {config_path}")
+
+    if not args.no_plot:
+        plot_constrained_delta_v_history(
+            output["history"],
+            log_distance=True
+        )
