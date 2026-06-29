@@ -36,7 +36,7 @@ It currently supports:
 
 - impulsive Hohmann departure and circularization
 - Lambert-style transfer option
-- custom impulse phase targeting
+- custom phase targeting with selectable impulsive or finite-burn execution
 - target co-propagation during transfer
 - J2-aware wait-time scanning before departure
 - history logging for both chaser and target

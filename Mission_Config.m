@@ -23,7 +23,18 @@ function sys = Mission_Config()
     % 추진 시스템 사양
     sys.Isp = 200;             % 비추력 [s]
     sys.Thrust_Impulsive = 300;% 고추력기 [N]
-    sys.Thrust_Cont = 1;       % 저추력기 [N]
+
+    % Maneuver execution options.
+    % default_burn_model: "IMPULSIVE" preserves the legacy instantaneous
+    % delta-V behavior. Use "FINITE_BURN" to spread the same delta-V vector
+    % over a short, high-thrust burn.
+    sys.maneuver.default_burn_model = "IMPULSIVE";
+    sys.maneuver.direction_mode = "LOCAL_TANGENTIAL_RADIAL";
+    sys.maneuver.finite_burn_thrust = sys.Thrust_Impulsive; % [N]
+    sys.maneuver.finite_burn_isp = sys.Isp;                 % [s]
+    sys.maneuver.finite_burn_dt = 0.1;                      % [s]
+    sys.maneuver.max_single_burn_duration = 120.0;          % [s]
+    sys.maneuver.max_single_burn_delta_v = inf;             % [m/s]
     
     % 노이즈 및 불확실성 모델 (Gaussian Noise 1-sigma), 잠정적 폐기
     sys.noise.pos = 2.0;       % 위치 센서 노이즈 [m]

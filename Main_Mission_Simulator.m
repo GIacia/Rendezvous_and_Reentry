@@ -41,6 +41,24 @@ custom_params.gamma       = deg2rad(0.076877);      % [rad] 예: deg2rad(-0.0153
 custom_params.phase_angle_unit = "rad"; % "rad" or "deg"
 custom_params.gamma_unit       = "rad"; % "rad" or "deg"
 
+% Maneuver execution model for the custom phased maneuver.
+% Use "IMPULSIVE" for the legacy instantaneous delta-V model or
+% "FINITE_BURN" to execute the same delta-V over a short high-thrust burn.
+% phase_angle, delta_v, and gamma parameters.
+custom_params.burn_model = sys.maneuver.default_burn_model;
+burn_model_env = strtrim(string(getenv('RENDEZVOUS_BURN_MODEL')));
+if strlength(burn_model_env) > 0
+    custom_params.burn_model = upper(burn_model_env);
+end
+custom_params.burn_direction_mode = sys.maneuver.direction_mode;
+custom_params.finite_burn_thrust = sys.maneuver.finite_burn_thrust; % [N]
+custom_params.finite_burn_isp = sys.maneuver.finite_burn_isp;       % [s]
+custom_params.dt_burn = sys.maneuver.finite_burn_dt;                % [s]
+custom_params.max_single_burn_duration = sys.maneuver.max_single_burn_duration; % [s]
+custom_params.max_single_burn_delta_v = sys.maneuver.max_single_burn_delta_v;   % [m/s]
+custom_params.use_thrust_noise = false;
+custom_params.multi_hohmann_legs = []; % [] lets MULTI_HOHMANN choose from thermal limits.
+
 % Phase 1 종료 목표: Target 기준 LVLH 상대위치 [m]
 custom_params.desired_rel_lvlh = [0; -5000; 0];
 
@@ -56,12 +74,20 @@ custom_params.capture_pos_tol = 0.5;    % [m] desired_rel_lvlh 도달 판정 허
 custom_params.min_capture_time = 0;     % [s] 너무 이른 local minimum을 무시하고 싶으면 키우기
 
 % 원하는 모드로 문자열만 변경하세요: "CUSTOM_IMPULSE", "HOHMANN", "LAMBERT"
+% Mode options: "CUSTOM_IMPULSE", "HOHMANN", "MULTI_HOHMANN", "LAMBERT"
 phasing_mode = "CUSTOM_IMPULSE";
 
 [X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, 1);
 m_current = X_chaser(14);
 
 Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
+
+if isfield(hist_p1, 'maneuver_duration') && ~isempty(hist_p1.maneuver_duration)
+    max_burn_duration_p1 = max(hist_p1.maneuver_duration);
+    max_burn_delta_v_p1 = max(hist_p1.maneuver_delta_v);
+    fprintf('   Phase 1 max burn duration: %.3f s\n', max_burn_duration_p1);
+    fprintf('   Phase 1 max single-burn delta-V: %.6f m/s\n', max_burn_delta_v_p1);
+end
 
 h_vec_p1 = cross(X_target(1:3), X_target(4:6));
 i_u_p1 = X_target(1:3)/norm(X_target(1:3));

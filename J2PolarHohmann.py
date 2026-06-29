@@ -16,6 +16,9 @@ class EarthJ2:
     # J2: float = 0.0
 
 
+G0_M_S2 = 9.80665
+
+
 # ============================================================
 # Basic utilities
 # ============================================================
@@ -456,6 +459,43 @@ def find_first_phase_crossing(
 # Burn model
 # ============================================================
 
+def normalize_burn_model(burn_model):
+    model = str(burn_model).strip().lower()
+
+    aliases = {
+        "instant": "impulsive",
+        "instantaneous": "impulsive",
+        "custom_impulse": "impulsive",
+        "finite": "finite_burn",
+        "finite_impulse": "finite_burn",
+        "continuous": "finite_burn",
+    }
+
+    model = aliases.get(model, model)
+
+    if model not in {"impulsive", "finite_burn"}:
+        raise ValueError("burn_model must be 'impulsive' or 'finite_burn'.")
+
+    return model
+
+
+def local_tangential_radial_burn_direction(r_c, v_c, gamma_rad):
+    r_hat = r_c / np.linalg.norm(r_c)
+
+    h_vec = np.cross(r_c, v_c)
+    h_hat = h_vec / np.linalg.norm(h_vec)
+
+    t_hat = np.cross(h_hat, r_hat)
+    t_hat = t_hat / np.linalg.norm(t_hat)
+
+    burn_dir = (
+        np.cos(gamma_rad) * t_hat
+        + np.sin(gamma_rad) * r_hat
+    )
+
+    return burn_dir / np.linalg.norm(burn_dir)
+
+
 def apply_impulsive_burn_to_chaser(y, delta_v_km_s, gamma_rad):
     """
     Applies one impulsive burn to the chaser.
@@ -477,22 +517,151 @@ def apply_impulsive_burn_to_chaser(y, delta_v_km_s, gamma_rad):
     r_c = y_new[6:9]
     v_c = y_new[9:12]
 
-    r_hat = r_c / np.linalg.norm(r_c)
-
-    h_vec = np.cross(r_c, v_c)
-    h_hat = h_vec / np.linalg.norm(h_vec)
-
-    t_hat = np.cross(h_hat, r_hat)
-    t_hat = t_hat / np.linalg.norm(t_hat)
-
-    delta_v_vec = delta_v_km_s * (
-        np.cos(gamma_rad) * t_hat
-        + np.sin(gamma_rad) * r_hat
+    delta_v_vec = delta_v_km_s * local_tangential_radial_burn_direction(
+        r_c=r_c,
+        v_c=v_c,
+        gamma_rad=gamma_rad
     )
 
     y_new[9:12] += delta_v_vec
 
     return y_new, delta_v_vec
+
+
+def finite_burn_duration_s(delta_v_km_s, mass_kg, thrust_N, isp_s):
+    if delta_v_km_s < 0.0:
+        raise ValueError("delta_v must be non-negative.")
+
+    if delta_v_km_s == 0.0:
+        return 0.0
+
+    if mass_kg <= 0.0:
+        raise ValueError("initial_mass_kg must be positive.")
+
+    if thrust_N <= 0.0:
+        raise ValueError("thrust_N must be positive for finite burns.")
+
+    if isp_s <= 0.0:
+        raise ValueError("isp_s must be positive for finite burns.")
+
+    exhaust_velocity_m_s = isp_s * G0_M_S2
+    delta_v_m_s = delta_v_km_s * 1000.0
+    final_mass_kg = mass_kg * np.exp(-delta_v_m_s / exhaust_velocity_m_s)
+
+    return (mass_kg - final_mass_kg) * exhaust_velocity_m_s / thrust_N
+
+
+def target_chaser_ode_j2_finite_burn(t, y, burn_dir_eci, thrust_N, isp_s, earth=EarthJ2()):
+    """
+    Combined target/chaser propagation with a finite high-thrust burn.
+
+    y =
+    [
+        target r(3), target v(3),
+        chaser r(3), chaser v(3),
+        chaser mass kg
+    ]
+    """
+    dydt = np.zeros_like(y)
+
+    r_t = y[0:3]
+    v_t = y[3:6]
+    r_c = y[6:9]
+    v_c = y[9:12]
+    mass_kg = y[12]
+
+    burn_dir = np.array(burn_dir_eci, dtype=float)
+    burn_dir = burn_dir / np.linalg.norm(burn_dir)
+
+    thrust_accel_km_s2 = (thrust_N / mass_kg) / 1000.0
+
+    dydt[0:3] = v_t
+    dydt[3:6] = acceleration_j2_eci(r_t, earth)
+
+    dydt[6:9] = v_c
+    dydt[9:12] = acceleration_j2_eci(r_c, earth) + thrust_accel_km_s2 * burn_dir
+    dydt[12] = -thrust_N / (isp_s * G0_M_S2)
+
+    return dydt
+
+
+def apply_finite_burn_to_chaser(
+    y,
+    delta_v_km_s,
+    gamma_rad,
+    thrust_N=1.0,
+    isp_s=200.0,
+    initial_mass_kg=2000.0,
+    rtol=1e-10,
+    atol=1e-12,
+    max_step_burn_s=5.0,
+    earth=EarthJ2()
+):
+    burn_duration_s = finite_burn_duration_s(
+        delta_v_km_s=delta_v_km_s,
+        mass_kg=initial_mass_kg,
+        thrust_N=thrust_N,
+        isp_s=isp_s
+    )
+
+    initial_direction = local_tangential_radial_burn_direction(
+        r_c=y[6:9],
+        v_c=y[9:12],
+        gamma_rad=gamma_rad
+    )
+
+    if burn_duration_s == 0.0:
+        return {
+            "y_plus": y.copy(),
+            "burn_duration_s": 0.0,
+            "final_mass_kg": initial_mass_kg,
+            "propellant_used_kg": 0.0,
+            "delivered_delta_v_km_s": 0.0,
+            "equivalent_delta_v_vec_eci_km_s": np.zeros(3),
+            "initial_burn_direction_eci": initial_direction,
+            "solution": None
+        }
+
+    y_aug_0 = np.concatenate([y, np.array([initial_mass_kg], dtype=float)])
+    burn_dir_eci = initial_direction
+
+    sol_burn = solve_ivp(
+        fun=lambda t, y_aug: target_chaser_ode_j2_finite_burn(
+            t=t,
+            y=y_aug,
+            burn_dir_eci=burn_dir_eci,
+            thrust_N=thrust_N,
+            isp_s=isp_s,
+            earth=earth
+        ),
+        t_span=(0.0, burn_duration_s),
+        y0=y_aug_0,
+        method="DOP853",
+        rtol=rtol,
+        atol=atol,
+        dense_output=True,
+        max_step=max_step_burn_s
+    )
+
+    if not sol_burn.success:
+        raise RuntimeError(f"Finite burn propagation failed: {sol_burn.message}")
+
+    y_aug_plus = sol_burn.y[:, -1]
+    final_mass_kg = y_aug_plus[12]
+    delivered_delta_v_km_s = (
+        isp_s * G0_M_S2 * np.log(initial_mass_kg / final_mass_kg) / 1000.0
+    )
+
+    return {
+        "y_plus": y_aug_plus[0:12],
+        "burn_duration_s": burn_duration_s,
+        "final_mass_kg": final_mass_kg,
+        "propellant_used_kg": initial_mass_kg - final_mass_kg,
+        "delivered_delta_v_km_s": delivered_delta_v_km_s,
+        "equivalent_delta_v_vec_eci_km_s": delta_v_km_s * initial_direction,
+        "initial_burn_direction_eci": initial_direction,
+        "solution": sol_burn
+    }
 
 
 # ============================================================
@@ -623,6 +792,10 @@ def run_j2_polar_hohmann_rendezvous(
     phase_angle=None,
     delta_v=None,
     gamma=0.0,
+    burn_model="impulsive",
+    thrust_N=1.0,
+    isp_s=200.0,
+    initial_mass_kg=2000.0,
     angle_unit="rad",
     h_target_km=500.0,
     h_chaser_km=300.0,
@@ -634,6 +807,7 @@ def run_j2_polar_hohmann_rendezvous(
     atol=1e-12,
     max_step_wait_s=60.0,
     max_step_transfer_s=20.0,
+    max_step_burn_s=5.0,
     wait_sample_step_s=60.0,
     closest_sample_count=1200,
     desired_rel_lvlh=None,
@@ -654,13 +828,18 @@ def run_j2_polar_hohmann_rendezvous(
         If None, uses non-J2 Hohmann phase angle.
 
     delta_v:
-        Chaser impulsive burn magnitude.
+        Chaser maneuver delta-V budget.
         Unit: km/s.
         If None, uses non-J2 Hohmann first impulse.
 
     gamma:
         Angle between delta-V direction and tangential direction.
         gamma = 0 means pure prograde tangential burn.
+
+    burn_model:
+        "impulsive" for instantaneous delta-V, or "finite_burn" to spread
+        the same delta-V direction over a short high-thrust burn using
+        thrust_N, isp_s, and initial_mass_kg.
 
     angle_unit:
         "rad" or "deg".
@@ -696,6 +875,8 @@ def run_j2_polar_hohmann_rendezvous(
 
     if delta_v is None:
         delta_v = defaults["delta_v_1_km_s"]
+
+    burn_model = normalize_burn_model(burn_model)
 
     if desired_rel_lvlh is None:
         desired_rel_lvlh = np.array([0, 0, 0])
@@ -767,12 +948,50 @@ def run_j2_polar_hohmann_rendezvous(
 
         y_burn_minus = sol_wait.sol(t_burn)
 
-    # Apply burn
-    y_burn_plus, delta_v_vec_eci = apply_impulsive_burn_to_chaser(
-        y=y_burn_minus,
-        delta_v_km_s=delta_v,
-        gamma_rad=gamma
-    )
+    # Apply maneuver
+    if burn_model == "impulsive":
+        y_burn_plus, delta_v_vec_eci = apply_impulsive_burn_to_chaser(
+            y=y_burn_minus,
+            delta_v_km_s=delta_v,
+            gamma_rad=gamma
+        )
+        burn_duration_s = 0.0
+        delivered_delta_v_km_s = delta_v
+        final_mass_kg = initial_mass_kg * np.exp(
+            -(delta_v * 1000.0) / (isp_s * G0_M_S2)
+        )
+        propellant_used_kg = initial_mass_kg - final_mass_kg
+        initial_burn_direction_eci = (
+            delta_v_vec_eci / np.linalg.norm(delta_v_vec_eci)
+            if np.linalg.norm(delta_v_vec_eci) > 0.0
+            else np.zeros(3)
+        )
+        burn_solution = None
+
+    elif burn_model == "finite_burn":
+        burn_result = apply_finite_burn_to_chaser(
+            y=y_burn_minus,
+            delta_v_km_s=delta_v,
+            gamma_rad=gamma,
+            thrust_N=thrust_N,
+            isp_s=isp_s,
+            initial_mass_kg=initial_mass_kg,
+            rtol=rtol,
+            atol=atol,
+            max_step_burn_s=max_step_burn_s,
+            earth=earth
+        )
+        y_burn_plus = burn_result["y_plus"]
+        burn_duration_s = burn_result["burn_duration_s"]
+        delivered_delta_v_km_s = burn_result["delivered_delta_v_km_s"]
+        final_mass_kg = burn_result["final_mass_kg"]
+        propellant_used_kg = burn_result["propellant_used_kg"]
+        delta_v_vec_eci = burn_result["equivalent_delta_v_vec_eci_km_s"]
+        initial_burn_direction_eci = burn_result["initial_burn_direction_eci"]
+        burn_solution = burn_result["solution"]
+
+    else:
+        raise ValueError(f"Unsupported burn_model: {burn_model}")
 
     if post_burn_duration_s is None:
         post_burn_duration_s = 1.5 * defaults["transfer_time_s"]
@@ -801,29 +1020,47 @@ def run_j2_polar_hohmann_rendezvous(
 
     result = {
         "input_used": {
+            "burn_model": burn_model,
             "phase_angle_rad": phase_angle,
             "phase_angle_deg": np.degrees(phase_angle),
             "delta_v_km_s": delta_v,
             "delta_v_m_s": delta_v * 1000.0,
             "gamma_rad": gamma,
             "gamma_deg": np.degrees(gamma),
+            "thrust_N": thrust_N,
+            "isp_s": isp_s,
+            "initial_mass_kg": initial_mass_kg,
             "initial_phase_angle_rad": initial_phase_angle,
             "initial_phase_angle_deg": np.degrees(initial_phase_angle)
         },
         "non_j2_hohmann_reference": defaults,
         "burn": {
+            "burn_model": burn_model,
             "t_burn_since_sim_start_s": t_burn,
             "t_burn_since_sim_start_min": t_burn / 60.0,
             "t_burn_since_sim_start_hr": t_burn / 3600.0,
+            "burn_duration_s": burn_duration_s,
+            "burn_end_since_sim_start_s": t_burn + burn_duration_s,
+            "delivered_delta_v_km_s": delivered_delta_v_km_s,
+            "delivered_delta_v_m_s": delivered_delta_v_km_s * 1000.0,
+            "initial_mass_kg": initial_mass_kg,
+            "final_mass_kg": final_mass_kg,
+            "propellant_used_kg": propellant_used_kg,
+            "thrust_N": thrust_N,
+            "isp_s": isp_s,
             "target_state_eci_before_burn": y_burn_minus[0:6],
             "chaser_state_eci_before_burn": y_burn_minus[6:12],
-            "delta_v_vec_eci_km_s": delta_v_vec_eci
+            "target_state_eci_after_burn": y_burn_plus[0:6],
+            "chaser_state_eci_after_burn": y_burn_plus[6:12],
+            "initial_burn_direction_eci": initial_burn_direction_eci,
+            "delta_v_vec_eci_km_s": delta_v_vec_eci,
+            "finite_burn_solution": burn_solution
         },
         "closest_approach": {
             **closest,
-            "t_closest_since_sim_start_s": t_burn + closest["t_closest_after_burn_s"],
-            "t_closest_since_sim_start_min": (t_burn + closest["t_closest_after_burn_s"]) / 60.0,
-            "t_closest_since_sim_start_hr": (t_burn + closest["t_closest_after_burn_s"]) / 3600.0
+            "t_closest_since_sim_start_s": t_burn + burn_duration_s + closest["t_closest_after_burn_s"],
+            "t_closest_since_sim_start_min": (t_burn + burn_duration_s + closest["t_closest_after_burn_s"]) / 60.0,
+            "t_closest_since_sim_start_hr": (t_burn + burn_duration_s + closest["t_closest_after_burn_s"]) / 3600.0
         }
     }
 
@@ -841,6 +1078,7 @@ def run_j2_polar_hohmann_rendezvous(
         print(f"                              : {defaults['transfer_time_s'] / 60.0:.6f} min")
         print()
         print("[Input actually used]")
+        print(f"Burn model                    : {burn_model}")
         print(f"Phase angle                   : {phase_angle:.10f} rad")
         print(f"                              : {np.degrees(phase_angle):.6f} deg")
         print(f"Delta-V                       : {delta_v:.10f} km/s")
@@ -852,13 +1090,17 @@ def run_j2_polar_hohmann_rendezvous(
         print(f"Burn time since sim start     : {t_burn:.6f} s")
         print(f"                              : {t_burn / 60.0:.6f} min")
         print(f"                              : {t_burn / 3600.0:.6f} hr")
-        print(f"Delta-V vector ECI            : {delta_v_vec_eci} km/s")
+        print(f"Burn duration                 : {burn_duration_s:.6f} s")
+        print(f"Delivered delta-V budget      : {delivered_delta_v_km_s:.10f} km/s")
+        print(f"                              : {delivered_delta_v_km_s * 1000.0:.6f} m/s")
+        print(f"Propellant used               : {propellant_used_kg:.9f} kg")
+        print(f"Equivalent delta-V vector ECI : {delta_v_vec_eci} km/s")
         print()
         print("[Closest approach]")
         print(f"Closest after burn            : {closest['t_closest_after_burn_s']:.6f} s")
-        print(f"Closest since sim start       : {t_burn + closest['t_closest_after_burn_s']:.6f} s")
-        print(f"                              : {(t_burn + closest['t_closest_after_burn_s']) / 60.0:.6f} min")
-        print(f"                              : {(t_burn + closest['t_closest_after_burn_s']) / 3600.0:.6f} hr")
+        print(f"Closest since sim start       : {t_burn + burn_duration_s + closest['t_closest_after_burn_s']:.6f} s")
+        print(f"                              : {(t_burn + burn_duration_s + closest['t_closest_after_burn_s']) / 60.0:.6f} min")
+        print(f"                              : {(t_burn + burn_duration_s + closest['t_closest_after_burn_s']) / 3600.0:.6f} hr")
         print(f"Minimum distance              : {closest['min_distance_km']:.9f} km")
         print(f"Relative speed at closest     : {closest['relative_speed_km_s']:.10f} km/s")
         print(f"                              : {closest['relative_speed_km_s'] * 1000.0:.6f} m/s")
@@ -876,6 +1118,10 @@ if __name__ == "__main__":
         phase_angle=None,     # default: non-J2 Hohmann phase angle
         delta_v=None,         # default: non-J2 Hohmann first impulse
         gamma=0.0,            # pure tangential burn
+        burn_model="impulsive",
+        thrust_N=1.0,
+        isp_s=200.0,
+        initial_mass_kg=2000.0,
         angle_unit="rad",
         initial_phase_angle=np.pi/2,
         initial_chaser_angle=0.0, # chaser inserting angle, clockwise direction from the north pole

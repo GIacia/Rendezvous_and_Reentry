@@ -23,13 +23,14 @@ This means the code is appropriate for **conceptual mission studies and controll
 
 ## 2. Maneuver Modeling
 
-The phasing stage uses simplified impulsive maneuver logic.
+The phasing stage supports simplified impulsive maneuver logic and an optional finite-burn execution model for the custom phased maneuver.
 
 This is useful for:
 
 - first-order delta-V budgeting
 - transfer geometry studies
 - mission-sequence prototyping
+- early finite-burn sensitivity checks using a fixed thrust/Isp model
 
 But it is limited for:
 

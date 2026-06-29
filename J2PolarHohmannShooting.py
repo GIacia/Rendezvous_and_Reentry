@@ -2,17 +2,89 @@ import numpy as np
 import matplotlib.pyplot as plt
 DESIRED_REL_LVLH = np.array([0.0, -5.0, 0.0])
 
+DEFAULT_MANEUVER_CONFIG = {
+    "burn_model": "impulsive",
+    "thrust_N": 300.0,
+    "isp_s": 200.0,
+    "initial_mass_kg": 2000.0,
+    "max_step_burn_s": 0.5
+}
+
+DEFAULT_SCENARIO_CONFIG = {
+    "h_chaser_km": 300.0,
+    "h_target_km": 500.0,
+    "initial_phase_angle": 90.0,
+    "initial_chaser_angle": 0.0,
+    "desired_rel_lvlh": DESIRED_REL_LVLH,
+    "max_wait_time_s": None,
+    "post_burn_duration_s": None,
+    "closest_sample_count": 1200,
+}
+
 from J2PolarHohmann import (
     run_j2_polar_hohmann_rendezvous,
     non_j2_hohmann_defaults
 )
 
 
+def make_maneuver_config(
+    burn_model="impulsive",
+    thrust_N=1.0,
+    isp_s=200.0,
+    initial_mass_kg=2000.0,
+    max_step_burn_s=5.0
+):
+    return {
+        "burn_model": burn_model,
+        "thrust_N": thrust_N,
+        "isp_s": isp_s,
+        "initial_mass_kg": initial_mass_kg,
+        "max_step_burn_s": max_step_burn_s
+    }
+
+
+def resolve_maneuver_config(maneuver_config=None):
+    config = DEFAULT_MANEUVER_CONFIG.copy()
+    if maneuver_config is not None:
+        config.update(maneuver_config)
+    return config
+
+
+def make_scenario_config(
+    h_chaser_km=300.0,
+    h_target_km=500.0,
+    initial_phase_angle=90.0,
+    initial_chaser_angle=0.0,
+    desired_rel_lvlh=DESIRED_REL_LVLH,
+    max_wait_time_s=None,
+    post_burn_duration_s=None,
+    closest_sample_count=1200
+):
+    return {
+        "h_chaser_km": h_chaser_km,
+        "h_target_km": h_target_km,
+        "initial_phase_angle": initial_phase_angle,
+        "initial_chaser_angle": initial_chaser_angle,
+        "desired_rel_lvlh": np.array(desired_rel_lvlh, dtype=float),
+        "max_wait_time_s": max_wait_time_s,
+        "post_burn_duration_s": post_burn_duration_s,
+        "closest_sample_count": closest_sample_count
+    }
+
+
+def resolve_scenario_config(scenario_config=None):
+    config = DEFAULT_SCENARIO_CONFIG.copy()
+    if scenario_config is not None:
+        config.update(scenario_config)
+    config["desired_rel_lvlh"] = np.array(config["desired_rel_lvlh"], dtype=float)
+    return config
+
+
 # ============================================================
 # Parameter conversion helpers
 # ============================================================
 
-def get_default_parameter_vector():
+def get_default_parameter_vector(scenario_config=None):
     """
     Human-friendly optimization variables:
 
@@ -22,7 +94,11 @@ def get_default_parameter_vector():
         gamma_deg
     ]
     """
-    defaults = non_j2_hohmann_defaults()
+    scenario_config = resolve_scenario_config(scenario_config)
+    defaults = non_j2_hohmann_defaults(
+        h_chaser_km=scenario_config["h_chaser_km"],
+        h_target_km=scenario_config["h_target_km"]
+    )
 
     phase_angle_deg = defaults["phase_angle_deg"]
     delta_v_m_s = defaults["delta_v_1_km_s"] * 1000.0
@@ -61,7 +137,7 @@ def sanitize_parameters(p):
 # One simulation evaluation
 # ============================================================
 
-def evaluate_rendezvous_error(p, verbose=False):
+def evaluate_rendezvous_error(p, verbose=False, maneuver_config=None, scenario_config=None):
     """
     Runs the J2 propagator once.
 
@@ -77,6 +153,8 @@ def evaluate_rendezvous_error(p, verbose=False):
         Full propagation result.
     """
     p = sanitize_parameters(p)
+    maneuver_config = resolve_maneuver_config(maneuver_config)
+    scenario_config = resolve_scenario_config(scenario_config)
 
     phase_angle_deg = p[0]
     delta_v_km_s = p[1] / 1000.0
@@ -87,10 +165,16 @@ def evaluate_rendezvous_error(p, verbose=False):
         delta_v=delta_v_km_s,
         gamma=gamma_deg,
         angle_unit="deg",
-        initial_phase_angle=90.0,
-        initial_chaser_angle=0.0,
-        desired_rel_lvlh=DESIRED_REL_LVLH,
-        verbose=False
+        h_target_km=scenario_config["h_target_km"],
+        h_chaser_km=scenario_config["h_chaser_km"],
+        initial_phase_angle=scenario_config["initial_phase_angle"],
+        initial_chaser_angle=scenario_config["initial_chaser_angle"],
+        max_wait_time_s=scenario_config["max_wait_time_s"],
+        post_burn_duration_s=scenario_config["post_burn_duration_s"],
+        closest_sample_count=scenario_config["closest_sample_count"],
+        desired_rel_lvlh=scenario_config["desired_rel_lvlh"],
+        verbose=False,
+        **maneuver_config
     )
 
     error_lvlh = result["closest_approach"]["position_error_lvlh_km"]
@@ -104,7 +188,7 @@ def evaluate_rendezvous_error(p, verbose=False):
 
     if verbose:
         print("p =", p)
-        print("desired_rel_lvlh km =", DESIRED_REL_LVLH)
+        print("scenario =", scenario_config)
         print("error_lvlh km =", error_lvlh)
         print("residual [radial, along-track] km =", residual)
         print("distance km =", distance)
@@ -117,7 +201,9 @@ def evaluate_rendezvous_error(p, verbose=False):
 
 def finite_difference_jacobian(
     p,
-    finite_steps=np.array([0.01, 0.01, 0.01])
+    finite_steps=np.array([0.01, 0.01, 0.01]),
+    maneuver_config=None,
+    scenario_config=None
 ):
     """
     Numerically computes Jacobian:
@@ -134,7 +220,11 @@ def finite_difference_jacobian(
     """
     p = sanitize_parameters(p)
 
-    residual_0, distance_0, result_0 = evaluate_rendezvous_error(p)
+    residual_0, distance_0, result_0 = evaluate_rendezvous_error(
+        p,
+        maneuver_config=maneuver_config,
+        scenario_config=scenario_config
+    )
 
     m = len(residual_0)
     n = len(p)
@@ -153,8 +243,16 @@ def finite_difference_jacobian(
         p_plus = sanitize_parameters(p_plus)
         p_minus = sanitize_parameters(p_minus)
 
-        residual_plus, _, _ = evaluate_rendezvous_error(p_plus)
-        residual_minus, _, _ = evaluate_rendezvous_error(p_minus)
+        residual_plus, _, _ = evaluate_rendezvous_error(
+            p_plus,
+            maneuver_config=maneuver_config,
+            scenario_config=scenario_config
+        )
+        residual_minus, _, _ = evaluate_rendezvous_error(
+            p_minus,
+            maneuver_config=maneuver_config,
+            scenario_config=scenario_config
+        )
 
         J[:, j] = (residual_plus - residual_minus) / (2.0 * h)
 
@@ -172,6 +270,8 @@ def optimize_j2_hohmann_rendezvous(
     damping_initial=1e-2,
     finite_steps=np.array([0.01, 0.01, 0.01]),
     max_update=np.array([3.0, 20.0, 3.0]),
+    maneuver_config=None,
+    scenario_config=None,
     verbose=True
 ):
     """
@@ -203,8 +303,11 @@ def optimize_j2_hohmann_rendezvous(
     final_result : dict
         Includes optimized parameters, history, and final propagation result.
     """
+    maneuver_config = resolve_maneuver_config(maneuver_config)
+    scenario_config = resolve_scenario_config(scenario_config)
+
     if p0 is None:
-        p = get_default_parameter_vector()
+        p = get_default_parameter_vector(scenario_config=scenario_config)
     else:
         p = np.array(p0, dtype=float)
 
@@ -231,7 +334,9 @@ def optimize_j2_hohmann_rendezvous(
     for k in range(max_iter):
         J, residual, distance, result = finite_difference_jacobian(
             p,
-            finite_steps=finite_steps
+            finite_steps=finite_steps,
+            maneuver_config=maneuver_config,
+            scenario_config=scenario_config
         )
 
         if distance < best_distance:
@@ -292,7 +397,9 @@ def optimize_j2_hohmann_rendezvous(
             p_trial = sanitize_parameters(p + alpha * dp)
 
             residual_trial, distance_trial, result_trial = evaluate_rendezvous_error(
-                p_trial
+                p_trial,
+                maneuver_config=maneuver_config,
+                scenario_config=scenario_config
             )
 
             if distance_trial < distance:
@@ -314,7 +421,11 @@ def optimize_j2_hohmann_rendezvous(
             if verbose:
                 print("step rejected; increasing damping.")
 
-    final_residual, final_distance, final_result = evaluate_rendezvous_error(best_p)
+    final_residual, final_distance, final_result = evaluate_rendezvous_error(
+        best_p,
+        maneuver_config=maneuver_config,
+        scenario_config=scenario_config
+    )
 
     final_output = {
         "optimized_parameters": {
@@ -327,6 +438,8 @@ def optimize_j2_hohmann_rendezvous(
         },
         "best_distance_km": final_distance,
         "best_residual_xz_km": final_residual,
+        "maneuver_config": maneuver_config,
+        "scenario_config": scenario_config,
         "history": history,
         "final_propagation_result": final_result
     }
@@ -423,6 +536,8 @@ def minimize_delta_v_on_zero_distance_manifold(
     stage2_max_iter=80,
     stage1_verbose=True,
     stage2_verbose=True,
+    maneuver_config=None,
+    scenario_config=None,
     bounds=None,
     ftol=1e-9
 ):
@@ -468,6 +583,9 @@ def minimize_delta_v_on_zero_distance_manifold(
             "objective_mode must be either 'first_burn' or 'two_impulse_total'."
         )
 
+    maneuver_config = resolve_maneuver_config(maneuver_config)
+    scenario_config = resolve_scenario_config(scenario_config)
+
     if bounds is None:
         bounds = [
             (0.0, 360.0),     # phase angle [deg]
@@ -479,14 +597,16 @@ def minimize_delta_v_on_zero_distance_manifold(
     # Stage 0: initial guess
     # ------------------------------------------------------------
     if p_start is None:
-        p_start = get_default_parameter_vector()
+        p_start = get_default_parameter_vector(scenario_config=scenario_config)
     else:
         p_start = np.array(p_start, dtype=float)
 
     p_start = sanitize_parameters(p_start)
 
     residual_start, distance_start, result_start = evaluate_rendezvous_error(
-        p_start
+        p_start,
+        maneuver_config=maneuver_config,
+        scenario_config=scenario_config
     )
 
     # ------------------------------------------------------------
@@ -504,6 +624,8 @@ def minimize_delta_v_on_zero_distance_manifold(
             p0=p_start,
             max_iter=stage1_max_iter,
             tolerance_km=feasibility_tolerance_km,
+            maneuver_config=maneuver_config,
+            scenario_config=scenario_config,
             verbose=stage1_verbose
         )
 
@@ -516,7 +638,9 @@ def minimize_delta_v_on_zero_distance_manifold(
     p_feasible = sanitize_parameters(p_feasible)
 
     residual_feasible, distance_feasible, result_feasible = evaluate_rendezvous_error(
-        p_feasible
+        p_feasible,
+        maneuver_config=maneuver_config,
+        scenario_config=scenario_config
     )
 
     if stage2_verbose:
@@ -545,7 +669,9 @@ def minimize_delta_v_on_zero_distance_manifold(
 
             try:
                 residual, distance, result = evaluate_rendezvous_error(
-                    p_clean
+                    p_clean,
+                    maneuver_config=maneuver_config,
+                    scenario_config=scenario_config
                 )
 
                 cache[key] = {
@@ -728,6 +854,8 @@ def minimize_delta_v_on_zero_distance_manifold(
         "success": solution.success,
         "message": solution.message,
         "objective_mode": objective_mode,
+        "maneuver_config": maneuver_config,
+        "scenario_config": scenario_config,
         "optimized_parameters": {
             "phase_angle_deg": p_final[0],
             "phase_angle_rad": np.radians(p_final[0]),
@@ -857,9 +985,27 @@ def plot_constrained_delta_v_history(history, log_distance=True):
 # ============================================================
 
 if __name__ == "__main__":
+    maneuver_config = make_maneuver_config(
+        burn_model="finite_burn",  # change to "finite_burn" for finite-burn simulation
+        thrust_N=300.0,
+        isp_s=200.0,
+        initial_mass_kg=2000.0,
+        max_step_burn_s=0.5
+    )
+
+    scenario_config = make_scenario_config(
+        h_chaser_km=300.0,
+        h_target_km=500.0,
+        initial_phase_angle=90.0,
+        initial_chaser_angle=0.0,
+        desired_rel_lvlh=DESIRED_REL_LVLH
+    )
+
     output = minimize_delta_v_on_zero_distance_manifold(
         p_start=None,
         objective_mode="two_impulse_total",
+        maneuver_config=maneuver_config,
+        scenario_config=scenario_config,
         stage1_verbose=True,
         stage2_verbose=True
     )

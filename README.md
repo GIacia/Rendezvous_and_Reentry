@@ -16,7 +16,8 @@ This repository currently models:
 - A target spacecraft and a chaser spacecraft
 - Hohmann-based phase planning with target co-propagation
 - A J2-aware wait-time search before departure so the transfer arrives closer to a desired LVLH capture point
-- Custom impulse phasing driven by externally tuned phase angle, delta-V, and gamma parameters
+- Multi-Hohmann phasing option for splitting large maneuvers across multiple thermally limited burns
+- Custom phased maneuver logic driven by externally tuned phase angle, delta-V, and gamma parameters, with selectable impulsive or finite-burn execution
 - LVLH waypoint-impulse proximity operations with cleanup, hold trims, cycloidal drift, R-bar hops, braking impulses, and mass depletion
 - selectable Phase 3 re-entry logic through `reentry_mode`
 - Simple thrust uncertainty / noise injection in selected phasing modes
@@ -79,7 +80,14 @@ Main_Mission_Simulator
 
 `Phasing_Propagator.m` performs the pre-rendezvous orbital transfer.
 
-The active root script currently uses `CUSTOM_IMPULSE` mode, where the departure phase angle, burn magnitude, and burn flight-path tilt are supplied through `custom_params`. Those values can be generated or refined using the Python shooting helpers.
+The active root script currently uses `CUSTOM_IMPULSE` mode, where the departure phase angle, burn magnitude, and burn flight-path tilt are supplied through `custom_params`. The maneuver execution model is selected separately with `custom_params.burn_model`: `"IMPULSIVE"` preserves the legacy instantaneous delta-V behavior, while `"FINITE_BURN"` applies the same delta-V direction over a short high-thrust burn using the configured thrust, Isp, and mass depletion. Those values can be generated or refined using the Python shooting helpers.
+
+To switch the MATLAB custom maneuver to finite-burn mode without editing the script:
+
+```matlab
+setenv('RENDEZVOUS_BURN_MODEL','FINITE_BURN')
+Main_Mission_Simulator
+```
 
 In `HOHMANN` mode, the logic is:
 

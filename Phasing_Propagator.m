@@ -33,6 +33,11 @@ function [X_final, dV_used, fuel_used, hist, X_target_final] = Phasing_Propagato
         dV_used = dV_used + dV;
         hist = append_hist(hist, sub_hist);
 
+    elseif mode == "MULTI_HOHMANN"
+        [X_state, X_target_state, dV, sub_hist] = execute_multi_hohmann(sys, X_state, target_r, X_target_state, custom_params, pmode);
+        dV_used = dV_used + dV;
+        hist = append_hist(hist, sub_hist);
+
     elseif mode == "CUSTOM_IMPULSE"
         [X_state, X_target_state, dV, sub_hist] = execute_custom_impulse(sys, X_state, X_target_state, custom_params);
         dV_used = dV_used + dV;
@@ -105,6 +110,7 @@ function [X_st, X_target_st, dV_mag, sub_hist] = execute_custom_impulse(sys, X_s
     phase_angle = get_angle_param_rad(custom_params, 'phase_angle', 'phase_angle_unit');
     delta_v     = get_required_scalar(custom_params, 'delta_v');
     gamma       = get_angle_param_rad(custom_params, 'gamma', 'gamma_unit');
+    maneuver_opts = get_maneuver_options(sys, custom_params);
 
     desired_rel_lvlh = get_vector_param(custom_params, 'desired_rel_lvlh', [0; -5; 0]);
 
@@ -127,7 +133,8 @@ function [X_st, X_target_st, dV_mag, sub_hist] = execute_custom_impulse(sys, X_s
 
     sub_hist = init_hist();
 
-    fprintf('   * Custom impulsive phasing mode 시작...\n');
+    fprintf('   * Custom phased maneuver mode started.\n');
+    fprintf('     - burn model: %s\n', char(maneuver_opts.burn_model));
     fprintf('     - target signed phase angle: %.8f rad (%.6f deg)\n', phase_angle, rad2deg(phase_angle));
     fprintf('     - commanded delta-V: %.6f m/s, gamma: %.8f rad (%.6f deg)\n', delta_v, gamma, rad2deg(gamma));
     fprintf('     - desired LVLH rel-pos: [%+.3f, %+.3f, %+.3f] m\n', desired_rel_lvlh(1), desired_rel_lvlh(2), desired_rel_lvlh(3));
@@ -138,12 +145,13 @@ function [X_st, X_target_st, dV_mag, sub_hist] = execute_custom_impulse(sys, X_s
 
     fprintf('     - departure wait time: %.3f s, final phase error: %.3e rad\n', wait_time, final_phase_error);
 
-    [X_st, dV_mag] = apply_custom_impulse(X_st, delta_v, gamma, sys);
-    sub_hist = log_full_state(sub_hist, X_st, X_target_st, wait_time); % same epoch, after impulse
+    [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+        execute_custom_maneuver(sys, X_st, X_target_st, delta_v, gamma, maneuver_opts, wait_time);
+    sub_hist = append_hist(sub_hist, burn_hist);
 
     [X_st, X_target_st, cap_hist, capture_time, miss, rel_lvlh, rel_vel_lvlh, reached_tol] = ...
         propagate_until_capture(sys, X_st, X_target_st, desired_rel_lvlh, dt_cap, max_capture_time, ...
-                                capture_pos_tol, event_time_tol, min_capture_time, wait_time);
+                                capture_pos_tol, event_time_tol, min_capture_time, wait_time + burn_duration);
     sub_hist = append_hist(sub_hist, cap_hist);
 
     if reached_tol
@@ -151,7 +159,9 @@ function [X_st, X_target_st, dV_mag, sub_hist] = execute_custom_impulse(sys, X_s
     else
         fprintf('     - closest-approach capture used. Check miss distance.\n');
     end
-    fprintf('     - phase-1 duration after impulse: %.3f s\n', capture_time);
+    fprintf('     - maneuver duration: %.3f s, delivered delta-V budget: %.6f m/s\n', burn_duration, dV_mag);
+    fprintf('     - capture propagation time after maneuver: %.3f s\n', capture_time);
+    fprintf('     - total custom phase duration: %.3f s\n', wait_time + burn_duration + capture_time);
     fprintf('     - final LVLH rel-pos: [%+.3f, %+.3f, %+.3f] m\n', rel_lvlh(1), rel_lvlh(2), rel_lvlh(3));
     fprintf('     - desired-position miss: %.6f m, rel-speed: %.6f m/s\n', miss, norm(rel_vel_lvlh));
     if miss > capture_pos_tol
@@ -391,22 +401,178 @@ function d = distance_to_desired(X_ch, X_t, desired_rel_lvlh)
     d = norm(rel_lvlh - desired_rel_lvlh);
 end
 
-function [X_st, dV_mag] = apply_custom_impulse(X_st, dV_cmd, gamma, sys)
-    r = X_st(1:3);
-    v = X_st(4:6);
-    r_hat = r / norm(r);
-    h_hat = cross(r, v);
-    h_hat = h_hat / norm(h_hat);
-    t_hat = cross(h_hat, r_hat);
-    t_hat = t_hat / norm(t_hat);
+function [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+    execute_custom_maneuver(sys, X_st, X_target_st, dV_cmd, gamma, maneuver_opts, t_offset)
 
-    % Convention: gamma > 0 tilts the burn from tangential toward radial-outward.
-    burn_dir = cos(gamma) * t_hat + sin(gamma) * r_hat;
-    burn_dir = burn_dir / norm(burn_dir);
+    if maneuver_opts.burn_model == "IMPULSIVE"
+        [X_st, dV_mag] = apply_custom_impulse(X_st, dV_cmd, gamma, sys, maneuver_opts.direction_mode);
+        burn_duration = 0;
+        burn_hist = init_hist();
+        burn_hist = log_full_state(burn_hist, X_st, X_target_st, t_offset);
+        burn_hist = log_maneuver_stat(burn_hist, "custom_impulse", dV_mag, burn_duration);
+
+    elseif maneuver_opts.burn_model == "FINITE_BURN"
+        [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+            apply_custom_finite_burn(sys, X_st, X_target_st, dV_cmd, gamma, maneuver_opts, t_offset);
+
+    else
+        error('Unsupported custom burn model: %s', char(maneuver_opts.burn_model));
+    end
+end
+
+function [X_st, dV_mag] = apply_custom_impulse(X_st, dV_cmd, gamma, sys, direction_mode)
+    if nargin < 5 || isempty(direction_mode)
+        direction_mode = "LOCAL_TANGENTIAL_RADIAL";
+    end
+
+    burn_dir = custom_burn_direction(X_st, gamma, direction_mode);
 
     X_st(4:6) = X_st(4:6) + dV_cmd * burn_dir;
     X_st(7) = X_st(7) * exp(-dV_cmd / (sys.Isp * sys.g0));
     dV_mag = dV_cmd;
+end
+
+function [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+    apply_custom_finite_burn(sys, X_st, X_target_st, dV_cmd, gamma, maneuver_opts, t_offset)
+
+    burn_dir_eci = custom_burn_direction(X_st, gamma, maneuver_opts.direction_mode);
+    [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+        apply_finite_burn_fixed_direction(sys, X_st, X_target_st, dV_cmd, burn_dir_eci, ...
+                                          maneuver_opts, t_offset, "custom_finite_burn");
+
+    if dV_cmd > 0
+        fprintf('     - finite burn thrust: %.6f N, Isp %.3f s\n', ...
+                maneuver_opts.finite_burn_thrust, maneuver_opts.finite_burn_isp);
+    end
+end
+
+function [X_chaser_next, X_target_next] = rk4_step_chaser_target_fixed_thrust( ...
+    X_chaser, X_target, sys, dt, thrust_N, Isp, burn_dir_eci)
+
+    k1 = orbit_dynamics_fixed_thrust(X_chaser, sys, thrust_N, Isp, burn_dir_eci);
+    k2 = orbit_dynamics_fixed_thrust(X_chaser + k1*dt/2, sys, thrust_N, Isp, burn_dir_eci);
+    k3 = orbit_dynamics_fixed_thrust(X_chaser + k2*dt/2, sys, thrust_N, Isp, burn_dir_eci);
+    k4 = orbit_dynamics_fixed_thrust(X_chaser + k3*dt, sys, thrust_N, Isp, burn_dir_eci);
+    X_chaser_next = X_chaser + (dt/6)*(k1 + 2*k2 + 2*k3 + k4);
+
+    if ~isempty(X_target)
+        k1t = orbit_dynamics_target(X_target, sys);
+        k2t = orbit_dynamics_target(X_target + k1t*dt/2, sys);
+        k3t = orbit_dynamics_target(X_target + k2t*dt/2, sys);
+        k4t = orbit_dynamics_target(X_target + k3t*dt, sys);
+        X_target_next = X_target + (dt/6)*(k1t + 2*k2t + 2*k3t + k4t);
+    else
+        X_target_next = [];
+    end
+end
+
+function dX = orbit_dynamics_fixed_thrust(X, sys, thrust_N, Isp, burn_dir_eci)
+    r = X(1:3);
+    v = X(4:6);
+    m = X(7);
+    r_norm = norm(r);
+
+    a_g = -sys.mu / r_norm^3 * r;
+    z2 = (r(3)/r_norm)^2;
+    factor = 1.5 * sys.J2 * (sys.mu/r_norm^2) * (sys.Re/r_norm)^2;
+    a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1);
+                      (r(2)/r_norm)*(5*z2 - 1);
+                      (r(3)/r_norm)*(5*z2 - 3) ];
+
+    a_thrust = burn_dir_eci(:) / norm(burn_dir_eci) * (thrust_N / m);
+    dm = -thrust_N / (Isp * sys.g0);
+
+    dX = [v; a_g + a_j2 + a_thrust; dm];
+end
+
+function burn_dir = custom_burn_direction(X_st, gamma, direction_mode)
+    mode = upper(string(direction_mode));
+
+    if mode == "LOCAL_TANGENTIAL_RADIAL" || mode == "LOCAL_TANGENT_RADIAL"
+        r = X_st(1:3);
+        v = X_st(4:6);
+        r_hat = r / norm(r);
+        h_hat = cross(r, v);
+        h_hat = h_hat / norm(h_hat);
+        t_hat = cross(h_hat, r_hat);
+        t_hat = t_hat / norm(t_hat);
+
+        % Convention: gamma > 0 tilts tangential thrust toward radial-outward.
+        burn_dir = cos(gamma) * t_hat + sin(gamma) * r_hat;
+        burn_dir = burn_dir / norm(burn_dir);
+    else
+        error('Unsupported burn_direction_mode: %s', char(mode));
+    end
+end
+
+function opts = get_maneuver_options(sys, custom_params)
+    default_model = get_sys_maneuver_field(sys, 'default_burn_model', "IMPULSIVE");
+    opts.burn_model = normalize_burn_model(get_param(custom_params, 'burn_model', default_model));
+
+    default_direction = get_sys_maneuver_field(sys, 'direction_mode', "LOCAL_TANGENTIAL_RADIAL");
+    opts.direction_mode = upper(string(get_param(custom_params, 'burn_direction_mode', default_direction)));
+
+    default_thrust = get_sys_maneuver_field(sys, 'finite_burn_thrust', get_sys_field(sys, 'Thrust_Impulsive', 300.0));
+    opts.finite_burn_thrust = get_param(custom_params, 'finite_burn_thrust', get_param(custom_params, 'thrust', default_thrust));
+
+    default_isp = get_sys_maneuver_field(sys, 'finite_burn_isp', get_sys_field(sys, 'Isp', 200.0));
+    opts.finite_burn_isp = get_param(custom_params, 'finite_burn_isp', get_param(custom_params, 'isp', default_isp));
+
+    default_dt = get_sys_maneuver_field(sys, 'finite_burn_dt', 0.1);
+    opts.dt_burn = get_param(custom_params, 'dt_burn', default_dt);
+
+    opts.max_single_burn_duration = get_param(custom_params, 'max_single_burn_duration', ...
+        get_sys_maneuver_field(sys, 'max_single_burn_duration', inf));
+    opts.max_single_burn_delta_v = get_param(custom_params, 'max_single_burn_delta_v', ...
+        get_sys_maneuver_field(sys, 'max_single_burn_delta_v', inf));
+    opts.use_thrust_noise = get_bool_param(custom_params, 'use_thrust_noise', false);
+end
+
+function model = normalize_burn_model(value)
+    model = upper(string(value));
+    if model == "FINITE" || model == "FINITE_BURN" || model == "FINITE_IMPULSE" || model == "CONTINUOUS"
+        model = "FINITE_BURN";
+    elseif model == "INSTANT" || model == "INSTANTANEOUS" || model == "CUSTOM_IMPULSE"
+        model = "IMPULSIVE";
+    end
+
+    if ~(model == "IMPULSIVE" || model == "FINITE_BURN")
+        error('Unknown burn_model: %s. Use "IMPULSIVE" or "FINITE_BURN".', char(model));
+    end
+end
+
+function value = get_sys_field(sys, name, default_value)
+    if isstruct(sys) && isfield(sys, name) && ~isempty(sys.(name))
+        value = sys.(name);
+    else
+        value = default_value;
+    end
+end
+
+function value = get_sys_maneuver_field(sys, name, default_value)
+    if isstruct(sys) && isfield(sys, 'maneuver') && isstruct(sys.maneuver) && ...
+            isfield(sys.maneuver, name) && ~isempty(sys.maneuver.(name))
+        value = sys.maneuver.(name);
+    else
+        value = default_value;
+    end
+end
+
+function value = get_bool_param(s, name, default_value)
+    if isstruct(s) && isfield(s, name) && ~isempty(s.(name))
+        raw = s.(name);
+    else
+        raw = default_value;
+    end
+
+    if islogical(raw)
+        value = raw;
+    elseif isnumeric(raw)
+        value = raw ~= 0;
+    else
+        text = lower(strtrim(string(raw)));
+        value = text == "true" || text == "on" || text == "yes" || text == "1";
+    end
 end
 
 function err = phase_error_to_target(X_ch, X_t, phase_angle)
@@ -484,10 +650,100 @@ function h = trim_hist_after(h, t_end)
     end
 end
 
+function [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+    execute_delta_v_maneuver(sys, X_st, X_target_st, dv_vec_cmd, maneuver_opts, t_offset, maneuver_name)
+
+    burn_hist = init_hist();
+    dV_cmd = norm(dv_vec_cmd);
+
+    if dV_cmd == 0
+        dV_mag = 0;
+        burn_duration = 0;
+        burn_hist = log_full_state(burn_hist, X_st, X_target_st, t_offset);
+        burn_hist = log_maneuver_stat(burn_hist, maneuver_name, dV_mag, burn_duration);
+        return;
+    end
+
+    if maneuver_opts.burn_model == "IMPULSIVE"
+        X_st(4:6) = X_st(4:6) + dv_vec_cmd;
+        X_st(7) = X_st(7) * exp(-dV_cmd / (sys.Isp * sys.g0));
+        dV_mag = dV_cmd;
+        burn_duration = 0;
+        burn_hist = log_full_state(burn_hist, X_st, X_target_st, t_offset);
+        burn_hist = log_maneuver_stat(burn_hist, maneuver_name, dV_mag, burn_duration);
+
+    elseif maneuver_opts.burn_model == "FINITE_BURN"
+        burn_dir_eci = dv_vec_cmd / dV_cmd;
+        [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+            apply_finite_burn_fixed_direction(sys, X_st, X_target_st, dV_cmd, burn_dir_eci, maneuver_opts, t_offset, maneuver_name);
+
+    else
+        error('Unsupported burn model for delta-V maneuver: %s', char(maneuver_opts.burn_model));
+    end
+end
+
+function [X_st, X_target_st, dV_mag, burn_hist, burn_duration] = ...
+    apply_finite_burn_fixed_direction(sys, X_st, X_target_st, dV_cmd, burn_dir_eci, maneuver_opts, t_offset, maneuver_name)
+
+    burn_hist = init_hist();
+
+    if dV_cmd == 0
+        dV_mag = 0;
+        burn_duration = 0;
+        burn_hist = log_full_state(burn_hist, X_st, X_target_st, t_offset);
+        burn_hist = log_maneuver_stat(burn_hist, maneuver_name, dV_mag, burn_duration);
+        return;
+    end
+
+    thrust_nominal = maneuver_opts.finite_burn_thrust;
+    Isp = maneuver_opts.finite_burn_isp;
+    dt_burn = maneuver_opts.dt_burn;
+
+    if thrust_nominal <= 0
+        error('Finite burn requires positive thrust.');
+    end
+    if Isp <= 0
+        error('Finite burn requires positive Isp.');
+    end
+    if dt_burn <= 0
+        error('custom_params.dt_burn must be positive for finite burns.');
+    end
+
+    thrust_actual = thrust_nominal;
+    if maneuver_opts.use_thrust_noise
+        thrust_actual = thrust_nominal * (1 + randn * sys.noise.thrust_err);
+    end
+    if thrust_actual <= 0
+        error('Finite burn actual thrust became non-positive.');
+    end
+
+    m0 = X_st(7);
+    exhaust_velocity = Isp * sys.g0;
+    mf_commanded = m0 * exp(-dV_cmd / exhaust_velocity);
+    burn_duration = (m0 - mf_commanded) * exhaust_velocity / thrust_actual;
+
+    elapsed = 0;
+    while elapsed < burn_duration - 1e-12
+        dt_eff = min(dt_burn, burn_duration - elapsed);
+        [X_st, X_target_st] = rk4_step_chaser_target_fixed_thrust( ...
+            X_st, X_target_st, sys, dt_eff, thrust_actual, Isp, burn_dir_eci);
+        elapsed = elapsed + dt_eff;
+        burn_hist = log_full_state(burn_hist, X_st, X_target_st, t_offset + elapsed);
+
+        if X_st(7) <= 0
+            error('Chaser mass depleted during finite burn.');
+        end
+    end
+
+    dV_mag = exhaust_velocity * log(m0 / X_st(7));
+    burn_hist = log_maneuver_stat(burn_hist, maneuver_name, dV_mag, burn_duration);
+end
+
 %% --- Helper: Hohmann Transfer Execution ---
 function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, target_r, X_target_st, custom_params, pmode)
     sub_hist = init_hist();
     dV_tot = 0;
+    maneuver_opts = get_maneuver_options(sys, custom_params);
 
     dt_wait     = get_param(custom_params, 'dt_wait', 30);      % wait propagation step [s]
     dt_transfer = get_param(custom_params, 'dt_transfer', 10);  % transfer propagation step [s]
@@ -528,16 +784,22 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
         best_wait = 0;
     end
 
-    % First Hohmann impulse at the numerically selected epoch.
-    [X_st, dV1] = apply_hohmann_departure_impulse(X_st, target_r, X_target_st, sys, false);
+    % First Hohmann maneuver at the numerically selected epoch.
+    dv1_vec = hohmann_departure_delta_v_vec(X_st, target_r, sys);
+    [X_st, X_target_st, dV1, burn_hist, ~] = execute_delta_v_maneuver( ...
+        sys, X_st, X_target_st, dv1_vec, maneuver_opts, sub_hist.time_end, "hohmann_departure");
     dV_tot = dV_tot + dV1;
+    sub_hist = append_hist(sub_hist, burn_hist);
 
     [X_st, X_target_st, transfer_hist] = propagate_for_duration(X_st, X_target_st, sys, TOF, dt_transfer, sub_hist.time_end);
     sub_hist = append_hist(sub_hist, transfer_hist);
 
-    % Circularization impulse at arrival radius.
-    [X_st, dV2] = apply_circularization_impulse(X_st, target_r, X_target_st, sys, false);
+    % Circularization maneuver at arrival radius.
+    dv2_vec = circularization_delta_v_vec(X_st, X_target_st, sys);
+    [X_st, X_target_st, dV2, burn_hist, ~] = execute_delta_v_maneuver( ...
+        sys, X_st, X_target_st, dv2_vec, maneuver_opts, sub_hist.time_end, "hohmann_circularization");
     dV_tot = dV_tot + dV2;
+    sub_hist = append_hist(sub_hist, burn_hist);
 
     if ~isempty(X_target_st)
         [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_st(1:6), X_target_st);
@@ -547,6 +809,155 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
         if norm(miss) > pos_tol
             fprintf('     - warning: capture error is larger than %.0f m. Increase max_wait/refinement or use Lambert targeting.\n', pos_tol);
         end
+    end
+end
+
+%% --- Helper: Multi-Hohmann Transfer Execution ---
+function [X_st, X_target_st, dV_tot, sub_hist] = execute_multi_hohmann(sys, X_st, target_r, X_target_st, custom_params, pmode)
+    sub_hist = init_hist();
+    dV_tot = 0;
+    maneuver_opts = get_maneuver_options(sys, custom_params);
+
+    dt_wait     = get_param(custom_params, 'dt_wait', 30);
+    dt_transfer = get_param(custom_params, 'dt_transfer', 10);
+    dt_scan     = get_param(custom_params, 'dt_scan', 60);
+    max_wait    = get_param(custom_params, 'max_wait', 2*86400);
+    refine_span = get_param(custom_params, 'refine_span', 180);
+    refine_step = get_param(custom_params, 'refine_step', 2);
+    pos_tol     = get_param(custom_params, 'capture_pos_tol', 1000);
+
+    if pmode == 3
+        max_wait = 360;
+    end
+
+    if isfield(sys, 'capture') && isfield(sys.capture, 'r_rel0')
+        desired_rel_lvlh = sys.capture.r_rel0(:);
+    else
+        desired_rel_lvlh = [-5000; 0; 0];
+    end
+
+    leg_count = get_param(custom_params, 'multi_hohmann_legs', []);
+    if isempty(leg_count)
+        leg_count = choose_multi_hohmann_leg_count(sys, X_st, target_r, maneuver_opts);
+    end
+    leg_count = max(1, round(leg_count));
+
+    radii = linspace(norm(X_st(1:3)), target_r, leg_count + 1);
+    leg_targets = radii(2:end);
+    total_tof = multi_hohmann_total_tof(sys, radii);
+
+    fprintf('   * Multi-Hohmann mode started: %d leg(s), burn model %s\n', ...
+            leg_count, char(maneuver_opts.burn_model));
+    fprintf('     - thermal limits: max burn %.3f s, max single delta-V %.6f m/s\n', ...
+            maneuver_opts.max_single_burn_duration, maneuver_opts.max_single_burn_delta_v);
+
+    if ~isempty(X_target_st)
+        fprintf('   * J2-aware Multi-Hohmann phase search started...\n');
+        best_wait = find_best_wait_time_multi(sys, X_st, X_target_st, radii, desired_rel_lvlh, ...
+                                              dt_scan, max_wait, refine_span, refine_step, dt_transfer, pmode);
+        fprintf('     - selected wait time: %.1f s (total transfer TOF %.1f s)\n', best_wait, total_tof);
+
+        [X_st, X_target_st, wait_hist] = propagate_for_duration(X_st, X_target_st, sys, best_wait, dt_wait, 0);
+        sub_hist = append_hist(sub_hist, wait_hist);
+    end
+
+    for ii = 1:leg_count
+        next_r = leg_targets(ii);
+        r_current = norm(X_st(1:3));
+        tof_leg = pi * sqrt(((r_current + next_r)/2)^3 / sys.mu);
+
+        dv_depart = hohmann_departure_delta_v_vec(X_st, next_r, sys);
+        [X_st, X_target_st, dV_leg, burn_hist, burn_duration] = execute_delta_v_maneuver( ...
+            sys, X_st, X_target_st, dv_depart, maneuver_opts, sub_hist.time_end, ...
+            sprintf("multi_hohmann_%02d_departure", ii));
+        dV_tot = dV_tot + dV_leg;
+        sub_hist = append_hist(sub_hist, burn_hist);
+        fprintf('     - leg %02d departure: dV %.6f m/s, burn %.3f s\n', ii, dV_leg, burn_duration);
+
+        [X_st, X_target_st, transfer_hist] = propagate_for_duration(X_st, X_target_st, sys, tof_leg, dt_transfer, sub_hist.time_end);
+        sub_hist = append_hist(sub_hist, transfer_hist);
+
+        dv_circ = circularization_delta_v_vec(X_st, X_target_st, sys);
+        [X_st, X_target_st, dV_leg, burn_hist, burn_duration] = execute_delta_v_maneuver( ...
+            sys, X_st, X_target_st, dv_circ, maneuver_opts, sub_hist.time_end, ...
+            sprintf("multi_hohmann_%02d_circularization", ii));
+        dV_tot = dV_tot + dV_leg;
+        sub_hist = append_hist(sub_hist, burn_hist);
+        fprintf('     - leg %02d circularization: dV %.6f m/s, burn %.3f s\n', ii, dV_leg, burn_duration);
+    end
+
+    if ~isempty(X_target_st)
+        [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_st(1:6), X_target_st);
+        miss = rel_lvlh - desired_rel_lvlh;
+        fprintf('     - capture LVLH position: [%+.1f, %+.1f, %+.1f] m\n', rel_lvlh(1), rel_lvlh(2), rel_lvlh(3));
+        fprintf('     - capture error from desired: %.1f m, rel-speed: %.4f m/s\n', norm(miss), norm(rel_vel_lvlh));
+        if norm(miss) > pos_tol
+            fprintf('     - warning: capture error is larger than %.0f m. Adjust leg count or search settings.\n', pos_tol);
+        end
+    end
+end
+
+function leg_count = choose_multi_hohmann_leg_count(sys, X_st, target_r, maneuver_opts)
+    max_legs = 50;
+    leg_count = 1;
+
+    for n = 1:max_legs
+        radii = linspace(norm(X_st(1:3)), target_r, n + 1);
+        [max_dv, max_duration] = estimate_multi_hohmann_max_burn(sys, X_st(7), radii, maneuver_opts);
+
+        dv_ok = isinf(maneuver_opts.max_single_burn_delta_v) || max_dv <= maneuver_opts.max_single_burn_delta_v;
+        duration_ok = isinf(maneuver_opts.max_single_burn_duration) || max_duration <= maneuver_opts.max_single_burn_duration;
+
+        if dv_ok && duration_ok
+            leg_count = n;
+            return;
+        end
+    end
+
+    leg_count = max_legs;
+end
+
+function [max_dv, max_duration] = estimate_multi_hohmann_max_burn(sys, mass0, radii, maneuver_opts)
+    max_dv = 0;
+    max_duration = 0;
+    mass = mass0;
+
+    for ii = 1:(numel(radii)-1)
+        r1 = radii(ii);
+        r2 = radii(ii+1);
+        a = 0.5 * (r1 + r2);
+        v1 = sqrt(sys.mu / r1);
+        v2 = sqrt(sys.mu / r2);
+        vt1 = sqrt(sys.mu * (2/r1 - 1/a));
+        vt2 = sqrt(sys.mu * (2/r2 - 1/a));
+        dvs = [abs(vt1 - v1), abs(v2 - vt2)];
+
+        for jj = 1:numel(dvs)
+            dv = dvs(jj);
+            duration = estimate_finite_burn_duration(sys, mass, dv, maneuver_opts);
+            max_dv = max(max_dv, dv);
+            max_duration = max(max_duration, duration);
+            mass = mass * exp(-dv / (maneuver_opts.finite_burn_isp * sys.g0));
+        end
+    end
+end
+
+function duration = estimate_finite_burn_duration(sys, mass0, delta_v, maneuver_opts)
+    if maneuver_opts.burn_model == "IMPULSIVE" || delta_v == 0
+        duration = 0;
+        return;
+    end
+
+    ve = maneuver_opts.finite_burn_isp * sys.g0;
+    mf = mass0 * exp(-delta_v / ve);
+    duration = (mass0 - mf) * ve / maneuver_opts.finite_burn_thrust;
+end
+
+function total_tof = multi_hohmann_total_tof(sys, radii)
+    total_tof = 0;
+    for ii = 1:(numel(radii)-1)
+        a = 0.5 * (radii(ii) + radii(ii+1));
+        total_tof = total_tof + pi * sqrt(a^3 / sys.mu);
     end
 end
 
@@ -600,9 +1011,64 @@ function [rel_lvlh, rel_vel_lvlh] = predict_hohmann_capture(sys, X_ch_wait, X_t_
     [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
 end
 
+function best_wait = find_best_wait_time_multi(sys, X_ch0, X_t0, radii, desired_rel_lvlh, dt_scan, max_wait, refine_span, refine_step, dt_transfer, pmode)
+    candidate_times = 0:dt_scan:max_wait;
+    [best_wait, ~] = scan_wait_candidates_multi(sys, X_ch0, X_t0, radii, desired_rel_lvlh, candidate_times, dt_transfer, pmode);
+
+    t1 = max(0, best_wait - refine_span);
+    t2 = min(max_wait, best_wait + refine_span);
+    refined_times = t1:refine_step:t2;
+    [best_wait, ~] = scan_wait_candidates_multi(sys, X_ch0, X_t0, radii, desired_rel_lvlh, refined_times, dt_transfer, pmode);
+end
+
+function [best_wait, best_metric] = scan_wait_candidates_multi(sys, X_ch0, X_t0, radii, desired_rel_lvlh, candidate_times, dt_transfer, pmode)
+    best_wait = candidate_times(1);
+    best_metric = inf;
+
+    X_ch_wait = X_ch0;
+    X_t_wait = X_t0;
+    t_prev = 0;
+
+    for idx = 1:numel(candidate_times)
+        t_now = candidate_times(idx);
+        dt_to_next = t_now - t_prev;
+        if dt_to_next > 0
+            [X_ch_wait, X_t_wait] = propagate_state_only(X_ch_wait, X_t_wait, sys, dt_to_next, min(60, max(1, dt_to_next)));
+        end
+        t_prev = t_now;
+
+        if abs(acos(dot(X_ch_wait(1:3), X_t_wait(1:3))/(norm(X_ch_wait(1:3))*norm(X_t_wait(1:3)))) - sys.phase) > 0.5 * sys.phase && pmode == 1
+            continue
+        end
+
+        [rel_lvlh, ~] = predict_multi_hohmann_capture(sys, X_ch_wait, X_t_wait, radii, dt_transfer);
+        metric = norm(rel_lvlh - desired_rel_lvlh);
+
+        if metric < best_metric
+            best_metric = metric;
+            best_wait = t_now;
+        end
+    end
+end
+
+function [rel_lvlh, rel_vel_lvlh] = predict_multi_hohmann_capture(sys, X_ch_wait, X_t_wait, radii, dt_transfer)
+    X_ch = X_ch_wait;
+    X_t = X_t_wait;
+
+    for ii = 2:numel(radii)
+        target_r = radii(ii);
+        r_current = norm(X_ch(1:3));
+        tof_leg = pi * sqrt(((r_current + target_r)/2)^3 / sys.mu);
+        [X_ch, ~] = apply_hohmann_departure_impulse(X_ch, target_r, X_t, sys, false);
+        [X_ch, X_t] = propagate_state_only(X_ch, X_t, sys, tof_leg, dt_transfer);
+        [X_ch, ~] = apply_circularization_impulse(X_ch, target_r, X_t, sys, false);
+    end
+
+    [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_ch(1:6), X_t);
+end
+
 %% --- Helper: Impulses ---
-function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, ~, sys, use_noise)
-    if nargin < 4, use_noise = true; end
+function dv_vec = hohmann_departure_delta_v_vec(X_st, target_r, sys)
     r_current = norm(X_st(1:3));
     v_current = norm(X_st(4:6));
     a_trans = (r_current + target_r) / 2;
@@ -610,27 +1076,37 @@ function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, ~, sys
     v_trans1 = sqrt(sys.mu * (2/r_current - 1/a_trans - sys.J2 * sys.Re^2 / r_current^3 * (3 * (X_st(3)/r_current)^2 - 1)));
 
     dV_cmd = v_trans1 - v_current;
-    dV_mag = abs(dV_cmd);
-    if use_noise
-        dV_mag = dV_mag * (1 + randn * sys.noise.thrust_err);
-    end
     dv_vec = dV_cmd * X_st(4:6) / v_current;
-    X_st(4:6) = X_st(4:6) + dv_vec;
-    X_st(7) = X_st(7) * exp(-dV_mag / (sys.Isp * sys.g0));
 end
 
-function [X_st, dV_mag] = apply_circularization_impulse(X_st, target_r, X_target_st, sys, use_noise)
-    if nargin < 3, use_noise = true; end
+function dv_vec_cmd = circularization_delta_v_vec(X_st, X_target_st, sys)
     r = X_st(1:3);
     v = X_st(4:6);
-    r_target_current = norm(X_target_st(1:3));
-    v_target_current = norm(X_target_st(4:6));
     r_norm = norm(r);
     h_vec = cross(r, v);
     tangential_dir = cross(h_vec, r);
     tangential_dir = tangential_dir / norm(tangential_dir);
     v_circ_req = tangential_dir * sqrt(sys.mu / r_norm);
     dv_vec_cmd = v_circ_req - v;
+end
+
+function [X_st, dV_mag] = apply_hohmann_departure_impulse(X_st, target_r, ~, sys, use_noise)
+    if nargin < 4, use_noise = true; end
+    dv_vec = hohmann_departure_delta_v_vec(X_st, target_r, sys);
+    dV_cmd = norm(dv_vec);
+    dV_mag = abs(dV_cmd);
+    if use_noise
+        dV_mag = dV_mag * (1 + randn * sys.noise.thrust_err);
+    end
+    if dV_cmd > 0
+        X_st(4:6) = X_st(4:6) + dv_vec/dV_cmd*dV_mag;
+    end
+    X_st(7) = X_st(7) * exp(-dV_mag / (sys.Isp * sys.g0));
+end
+
+function [X_st, dV_mag] = apply_circularization_impulse(X_st, target_r, X_target_st, sys, use_noise)
+    if nargin < 3, use_noise = true; end
+    dv_vec_cmd = circularization_delta_v_vec(X_st, X_target_st, sys);
     dV_cmd = norm(dv_vec_cmd);
     dV_mag = dV_cmd;
     if use_noise
@@ -749,6 +1225,9 @@ function hist = init_hist()
     hist.rel_pos = [];
     hist.rel_pos_lvlh = [];
     hist.rel_vel_lvlh = [];
+    hist.maneuver_delta_v = [];
+    hist.maneuver_duration = [];
+    hist.maneuver_name = strings(1,0);
 end
 
 function hist = log_full_state(hist, X_chaser, X_target, t)
@@ -767,6 +1246,22 @@ function hist = log_full_state(hist, X_chaser, X_target, t)
     end
 end
 
+function hist = log_maneuver_stat(hist, name, delta_v, duration)
+    if ~isfield(hist, 'maneuver_delta_v')
+        hist.maneuver_delta_v = [];
+    end
+    if ~isfield(hist, 'maneuver_duration')
+        hist.maneuver_duration = [];
+    end
+    if ~isfield(hist, 'maneuver_name')
+        hist.maneuver_name = strings(1,0);
+    end
+
+    hist.maneuver_delta_v = [hist.maneuver_delta_v, delta_v];
+    hist.maneuver_duration = [hist.maneuver_duration, duration];
+    hist.maneuver_name(end+1) = string(name);
+end
+
 function hist = append_hist(hist, sub_hist)
     if isempty(sub_hist.time)
         return;
@@ -774,6 +1269,13 @@ function hist = append_hist(hist, sub_hist)
     fields = {'pos','vel','mass','time','target_pos','target_vel','rel_pos','rel_pos_lvlh','rel_vel_lvlh'};
     for i = 1:numel(fields)
         f = fields{i};
+        if isfield(sub_hist, f) && isfield(hist, f)
+            hist.(f) = [hist.(f), sub_hist.(f)];
+        end
+    end
+    stat_fields = {'maneuver_delta_v','maneuver_duration','maneuver_name'};
+    for i = 1:numel(stat_fields)
+        f = stat_fields{i};
         if isfield(sub_hist, f) && isfield(hist, f)
             hist.(f) = [hist.(f), sub_hist.(f)];
         end
