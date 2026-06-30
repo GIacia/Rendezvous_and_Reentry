@@ -12,7 +12,7 @@
 - Phase 3 re-entry setup: `HOHMANN`, `R_BAR_200_FPA`
 - Phase 4 re-entry vehicle shape: `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, `TPS_MIN`
 
-방치되어 있던 `LAMBERT` mode는 active code에서 제거했다. 또한 과거의 `continuous` burn alias는 실제 low-thrust spiral 모델과 혼동될 수 있으므로 더 이상 허용하지 않는다. 짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션은 명확하게 `FINITE_BURN`으로만 사용한다.
+짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션을 `FINITE_BURN`으로 사용한다.
 
 ---
 
@@ -314,7 +314,7 @@ LOS 판단은 두 vehicle을 잇는 line segment와 Earth sphere의 관계로 �
 - `min_los_elevation_deg`: re-entry vehicle 기준 chaser elevation 최소값
 - `first_los_loss_time_s`: 처음 LOS가 끊긴 시간
 
-중요한 limitation은 plasma blackout physics가 아직 없다는 점이다. 즉, 현재 LOS는 geometry-only check이다. 실제 blackout-free communication을 보려면 electron density, plasma frequency, RF frequency, antenna pointing, link budget까지 추가해야 한다.
+현재 limitation으로 LOS가 plasma blackout physics를 고려하지 않는 단순한 모델이라는 점이 있다. 실제 blackout phsics를 구현하려면 electron density, plasma frequency, RF frequency, antenna pointing, link budget 등을 고려해야 한다.
 
 ---
 
@@ -601,6 +601,9 @@ Phase 1 parameter optimization과 MATLAB JSON export를 담당한다.
 
 3. **Regression test / batch runner 추가**
    기능이 많아졌으므로, 대표 scenario를 자동으로 돌려 Phase 1 miss, Phase 3 FPA, Phase 4 max heat flux, LOS maintained 여부를 저장하는 batch regression script가 필요하다.
+
+4. **Chamber heat load budget 및 correction burn phase 추가**
+   현재 연소 Chamber heat load budget은 설정되어있지 않지만 overheat 될 경우 `MULTI_HOHMANN` 모드를 활용할 수 있도록 구현되어있다. 실제 mission을 모사하기 위해서는 매 Maneuver마다 생긴 오차를 보정해주는 Correction burn phase를 추가해야 한다.
 
 ---
 
