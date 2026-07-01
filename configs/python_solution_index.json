@@ -1,0 +1,72 @@
+{
+  "cases": [
+    {
+      "case_id": "impulsive_drag-off_h300.0-500.0_phase90.0_31c1e45c_410e0069_20260630_134559Z",
+      "created_at": "2026-06-30T13:45:59Z",
+      "environment": {
+        "atmospheric_drag_enabled": false,
+        "atmospheric_drag_model": "ISA76"
+      },
+      "latest_alias_path": "latest_python_solution.json",
+      "optimizer": {
+        "burn_duration_s": 0.0,
+        "final_distance_km": 2.1613725741489726e-07,
+        "objective_mode": "two_impulse_total",
+        "success": false,
+        "total_two_impulse_delta_v_m_s": 115.41247033689754
+      },
+      "path": "python_runs/impulsive_drag-off_h300.0-500.0_phase90.0_31c1e45c_410e0069_20260630_134559Z.json",
+      "phase1": {
+        "burn_model": "IMPULSIVE",
+        "delta_v_m_s": 57.992996742104424,
+        "gamma_deg": 0.05484648418780274,
+        "mode": "CUSTOM_IMPULSE",
+        "phase_angle_deg": 3.825208708376021
+      },
+      "result_hash": "410e00697144186c",
+      "scenario": {
+        "h_chaser_km": 300.0,
+        "h_target_km": 500.0,
+        "initial_chaser_angle_deg": 0.0,
+        "initial_phase_angle_deg": 90.0
+      },
+      "settings_hash": "31c1e45c970413bc"
+    },
+    {
+      "case_id": "finite_burn_drag-off_h300.0-500.0_phase90.0_2413dca6_e937c0c4_20260630_155605Z",
+      "created_at": "2026-06-30T15:56:05Z",
+      "environment": {
+        "atmospheric_drag_enabled": false,
+        "atmospheric_drag_model": "ISA76"
+      },
+      "latest_alias_path": "latest_python_solution.json",
+      "optimizer": {
+        "burn_duration_s": 421.2916584615743,
+        "final_distance_km": 2.0333285112006505e-06,
+        "objective_mode": "two_impulse_total",
+        "success": false,
+        "total_two_impulse_delta_v_m_s": 146.19248940051534
+      },
+      "path": "python_runs/finite_burn_drag-off_h300.0-500.0_phase90.0_2413dca6_e937c0c4_20260630_155605Z.json",
+      "phase1": {
+        "burn_model": "FINITE_BURN",
+        "delta_v_m_s": 64.23420512182543,
+        "gamma_deg": -1.416324018086378,
+        "mode": "CUSTOM_IMPULSE",
+        "phase_angle_deg": 3.5663059471393224
+      },
+      "result_hash": "e937c0c4aa423666",
+      "scenario": {
+        "h_chaser_km": 300.0,
+        "h_target_km": 500.0,
+        "initial_chaser_angle_deg": 0.0,
+        "initial_phase_angle_deg": 90.0
+      },
+      "settings_hash": "2413dca603adce55"
+    }
+  ],
+  "latest_case_id": "finite_burn_drag-off_h300.0-500.0_phase90.0_2413dca6_e937c0c4_20260630_155605Z",
+  "schema_version": 1,
+  "source": "J2PolarHohmannShooting.py",
+  "updated_at": "2026-07-01T09:04:27Z"
+}

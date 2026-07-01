@@ -69,16 +69,37 @@ Python shooting results can be exported directly into a MATLAB-readable mission 
 python J2PolarHohmannShooting.py --no-plot --matlab-config-out configs/latest_python_solution.json
 ```
 
+Every Python export now writes three things:
+
+- `configs/latest_python_solution.json`: latest alias for backward compatibility
+- `configs/python_runs/<case_id>.json`: archived result that is never overwritten by a different case
+- `configs/python_solution_index.json`: searchable index with `case_id`, `settings_hash`, burn model, scenario, drag settings, and optimizer summary
+
 Atmospheric drag is off by default. To optimize with the ISA76 drag option and export the same environment settings to MATLAB:
 
 ```bash
 python J2PolarHohmannShooting.py --no-plot --atmospheric-drag isa76 --matlab-config-out configs/latest_python_solution.json
 ```
 
-Then load that config in MATLAB:
+Then load that exact latest config in MATLAB:
 
 ```matlab
 setenv('RENDEZVOUS_CONFIG_JSON','configs/latest_python_solution.json')
+Main_Mission_Simulator
+```
+
+Or let MATLAB select a matching archived Python result automatically. Clear the explicit config path, set the desired burn model, and run:
+
+```matlab
+setenv('RENDEZVOUS_CONFIG_JSON','')
+setenv('RENDEZVOUS_BURN_MODEL','IMPULSIVE')
+Main_Mission_Simulator
+```
+
+The automatic selector reads `configs/python_solution_index.json` and chooses the newest case matching the current burn model, scenario altitude pair, and atmospheric-drag setting. You can also pin an exact archived run:
+
+```matlab
+setenv('RENDEZVOUS_CONFIG_CASE_ID','impulsive_drag-off_h300.0-500.0_phase90.0_31c1e45c_410e0069_20260630_134559Z')
 Main_Mission_Simulator
 ```
 

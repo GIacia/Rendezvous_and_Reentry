@@ -6,7 +6,7 @@ fprintf('================================================\n\n');
 
 %% 1. Initialization
 sys = Mission_Config();
-mission_cfg = load_mission_json_config_local();
+mission_cfg = load_mission_json_config_local(sys);
 sys = apply_json_to_sys_local(sys, mission_cfg);
 sys = apply_environment_env_overrides_local(sys);
 print_environment_config_local(sys);
@@ -681,8 +681,11 @@ function fpa_deg = flight_path_angle_deg_local(r, v)
 end
 
 %% Local helper functions for JSON mission configuration
-function cfg = load_mission_json_config_local()
+function cfg = load_mission_json_config_local(sys)
     cfg = struct();
+    if nargin < 1
+        sys = struct();
+    end
 
     config_path = strtrim(string(getenv('RENDEZVOUS_CONFIG_JSON')));
     if strlength(config_path) == 0
@@ -690,6 +693,13 @@ function cfg = load_mission_json_config_local()
     end
 
     if strlength(config_path) == 0
+        [config_path, selection_msg] = select_python_config_from_index_local(sys);
+    else
+        selection_msg = "explicit RENDEZVOUS_CONFIG_JSON";
+    end
+
+    if strlength(config_path) == 0
+        fprintf('No mission JSON config selected. Using MATLAB defaults.\n');
         return;
     end
 
@@ -698,7 +708,176 @@ function cfg = load_mission_json_config_local()
     end
 
     cfg = jsondecode(fileread(config_path));
-    fprintf('Loaded mission JSON config: %s\n', char(config_path));
+    fprintf('Loaded mission JSON config: %s (%s)\n', char(config_path), char(selection_msg));
+    if has_json_path_local(cfg, {'archive','case_id'})
+        fprintf('   config case_id: %s\n', char(get_json_string_local(cfg, {'archive','case_id'}, "")));
+        fprintf('   settings_hash : %s\n', char(get_json_string_local(cfg, {'archive','settings_hash'}, "")));
+    end
+end
+
+function [config_path, selection_msg] = select_python_config_from_index_local(sys)
+    config_path = "";
+    selection_msg = "";
+
+    root_dir = fileparts(mfilename('fullpath'));
+    config_dir = fullfile(root_dir, 'configs');
+    index_path = fullfile(config_dir, 'python_solution_index.json');
+    if ~isfile(index_path)
+        latest_path = fullfile(config_dir, 'latest_python_solution.json');
+        if isfile(latest_path)
+            config_path = string(latest_path);
+            selection_msg = "fallback latest_python_solution.json";
+        end
+        return;
+    end
+
+    index_cfg = jsondecode(fileread(index_path));
+    if ~isfield(index_cfg, 'cases') || isempty(index_cfg.cases)
+        return;
+    end
+
+    cases = index_cfg.cases;
+    desired_case_id = strtrim(string(getenv('RENDEZVOUS_CONFIG_CASE_ID')));
+    desired_hash = strtrim(string(getenv('RENDEZVOUS_CONFIG_HASH')));
+    desired_burn = desired_burn_model_for_index_local(sys);
+    [desired_drag_enabled, desired_drag_model] = desired_drag_for_index_local(sys);
+
+    best_score = -inf;
+    best_path = "";
+    best_case_id = "";
+
+    for ii = 1:numel(cases)
+        entry = cases(ii);
+        entry_case_id = get_json_string_local(entry, {'case_id'}, "");
+        entry_hash = get_json_string_local(entry, {'settings_hash'}, "");
+
+        if strlength(desired_case_id) > 0
+            if entry_case_id == desired_case_id
+                [config_path, ~] = config_path_from_index_entry_local(config_dir, entry);
+                selection_msg = "case id " + desired_case_id;
+                return;
+            end
+            continue;
+        end
+
+        if strlength(desired_hash) > 0 && entry_hash ~= desired_hash
+            continue;
+        end
+
+        entry_burn = upper(get_json_string_local(entry, {'phase1','burn_model'}, ""));
+        if strlength(desired_burn) > 0 && entry_burn ~= desired_burn
+            continue;
+        end
+
+        score = 0;
+        if entry_burn == desired_burn
+            score = score + 100;
+        end
+        score = score + scenario_match_score_local(sys, entry);
+
+        entry_drag_enabled = get_json_bool_local(entry, {'environment','atmospheric_drag_enabled'}, false);
+        entry_drag_model = upper(get_json_string_local(entry, {'environment','atmospheric_drag_model'}, "ISA76"));
+        if entry_drag_enabled == desired_drag_enabled
+            score = score + 20;
+        end
+        if entry_drag_model == desired_drag_model
+            score = score + 5;
+        end
+        if strlength(desired_hash) > 0
+            score = score + 1000;
+        end
+
+        if score >= best_score
+            [candidate_path, ~] = config_path_from_index_entry_local(config_dir, entry);
+            best_score = score;
+            best_path = candidate_path;
+            best_case_id = entry_case_id;
+        end
+    end
+
+    if strlength(best_path) > 0
+        config_path = best_path;
+        selection_msg = sprintf("auto index match case %s", best_case_id);
+    end
+end
+
+function desired_burn = desired_burn_model_for_index_local(sys)
+    desired_burn = strtrim(string(getenv('RENDEZVOUS_BURN_MODEL')));
+    if strlength(desired_burn) == 0 && isfield(sys, 'maneuver') && isfield(sys.maneuver, 'default_burn_model')
+        desired_burn = string(sys.maneuver.default_burn_model);
+    end
+    desired_burn = normalize_burn_model_label_local(desired_burn);
+end
+
+function model = normalize_burn_model_label_local(value)
+    model = upper(strtrim(string(value)));
+    if model == "FINITE" || model == "FINITE_BURN" || model == "FINITE_IMPULSE"
+        model = "FINITE_BURN";
+    elseif model == "IMPULSIVE" || model == "INSTANT" || model == "INSTANTANEOUS" || model == "CUSTOM_IMPULSE"
+        model = "IMPULSIVE";
+    end
+end
+
+function [enabled, model] = desired_drag_for_index_local(sys)
+    drag_env = upper(strtrim(string(getenv('RENDEZVOUS_ATMOSPHERIC_DRAG'))));
+    if strlength(drag_env) > 0
+        enabled = ~(drag_env == "OFF" || drag_env == "NONE" || drag_env == "0" || drag_env == "DISABLED");
+        if enabled
+            model = drag_env;
+        else
+            model = "ISA76";
+        end
+        return;
+    end
+
+    enabled = false;
+    model = "ISA76";
+    if isfield(sys, 'environment') && isfield(sys.environment, 'atmospheric_drag')
+        drag = sys.environment.atmospheric_drag;
+        if isfield(drag, 'enabled')
+            enabled = logical(drag.enabled);
+        end
+        if isfield(drag, 'model')
+            model = upper(string(drag.model));
+        end
+    end
+end
+
+function score = scenario_match_score_local(sys, entry)
+    score = 0;
+    score = score + numeric_match_score_local(sys.h_insert/1000, get_json_number_local(entry, {'scenario','h_chaser_km'}, NaN), 1e-6, 20);
+    score = score + numeric_match_score_local(sys.h_target/1000, get_json_number_local(entry, {'scenario','h_target_km'}, NaN), 1e-6, 20);
+end
+
+function score = numeric_match_score_local(a, b, tol, points)
+    if isfinite(a) && isfinite(b) && abs(a - b) <= tol
+        score = points;
+    else
+        score = 0;
+    end
+end
+
+function [config_path, selection_msg] = config_path_from_index_entry_local(config_dir, entry)
+    rel_path = get_json_string_local(entry, {'path'}, "");
+    if strlength(rel_path) == 0
+        config_path = "";
+        selection_msg = "";
+        return;
+    end
+
+    if is_absolute_path_local(rel_path)
+        config_path = rel_path;
+    else
+        rel_path = strrep(rel_path, "/", filesep);
+        config_path = string(fullfile(config_dir, char(rel_path)));
+    end
+    selection_msg = get_json_string_local(entry, {'case_id'}, "");
+end
+
+function tf = is_absolute_path_local(path_value)
+    text_value = string(path_value);
+    tf = startsWith(text_value, filesep) || startsWith(text_value, "\\") || ...
+         (strlength(text_value) >= 2 && extractBetween(text_value, 2, 2) == ":");
 end
 
 function sys = apply_json_to_sys_local(sys, cfg)

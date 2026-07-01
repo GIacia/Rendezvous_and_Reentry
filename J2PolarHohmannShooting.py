@@ -1,6 +1,8 @@
 import argparse
+import hashlib
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -169,6 +171,161 @@ def to_jsonable(value):
     return value
 
 
+def canonical_json_text(value):
+    return json.dumps(to_jsonable(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def short_hash(value, length=12):
+    return hashlib.sha256(canonical_json_text(value).encode("utf-8")).hexdigest()[:length]
+
+
+def config_settings_signature(config):
+    return {
+        "schema_version": config.get("schema_version"),
+        "source": config.get("source"),
+        "scenario": config.get("scenario", {}),
+        "phase1_mode": (config.get("phase1", {}) or {}).get("mode"),
+        "burn_model": (config.get("phase1", {}) or {}).get("burn_model"),
+        "desired_rel_lvlh_m": (config.get("phase1", {}) or {}).get("desired_rel_lvlh_m"),
+        "maneuver": config.get("maneuver", {}),
+        "environment": config.get("environment", {}),
+    }
+
+
+def config_result_signature(config):
+    return {
+        "settings": config_settings_signature(config),
+        "phase1_solution": config.get("phase1", {}),
+        "optimizer": config.get("optimizer", {}),
+    }
+
+
+def safe_slug(value):
+    text = str(value).strip().lower()
+    chars = []
+    for ch in text:
+        if ch.isalnum():
+            chars.append(ch)
+        elif ch in {"_", "-", "."}:
+            chars.append(ch)
+        else:
+            chars.append("-")
+    slug = "".join(chars).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "case"
+
+
+def archive_labels(config):
+    scenario = config.get("scenario", {}) or {}
+    phase1 = config.get("phase1", {}) or {}
+    drag = ((config.get("environment", {}) or {}).get("atmospheric_drag", {}) or {})
+
+    burn = safe_slug(phase1.get("burn_model", "unknown"))
+    drag_enabled = bool(drag.get("enabled", False))
+    drag_model = safe_slug(drag.get("model", "off")) if drag_enabled else "drag-off"
+    h_chaser = scenario.get("h_chaser_km", "x")
+    h_target = scenario.get("h_target_km", "x")
+    phase0 = scenario.get("initial_phase_angle_deg", "x")
+
+    scenario_label = f"h{safe_slug(h_chaser)}-{safe_slug(h_target)}_phase{safe_slug(phase0)}"
+    return burn, drag_model, scenario_label
+
+
+def attach_archive_metadata(config, created_at=None):
+    config = to_jsonable(config)
+    created_at = created_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    settings_hash = short_hash(config_settings_signature(config), 16)
+    result_hash = short_hash(config_result_signature(config), 16)
+    burn, drag_model, scenario_label = archive_labels(config)
+    timestamp = created_at.replace("-", "").replace(":", "").replace("T", "_").replace("Z", "Z")
+    case_id = f"{burn}_{drag_model}_{scenario_label}_{settings_hash[:8]}_{result_hash[:8]}_{timestamp}"
+
+    config["archive"] = {
+        "schema_version": 1,
+        "created_at": created_at,
+        "case_id": case_id,
+        "settings_hash": settings_hash,
+        "result_hash": result_hash,
+        "settings_signature": config_settings_signature(config)
+    }
+    return config
+
+
+def relative_posix_path(path, base_dir):
+    try:
+        return path.resolve().relative_to(base_dir.resolve()).as_posix()
+    except ValueError:
+        return path.resolve().as_posix()
+
+
+def build_index_entry(config, archive_path, config_dir, latest_path=None):
+    archive = config["archive"]
+    phase1 = config.get("phase1", {}) or {}
+    scenario = config.get("scenario", {}) or {}
+    drag = ((config.get("environment", {}) or {}).get("atmospheric_drag", {}) or {})
+    optimizer = config.get("optimizer", {}) or {}
+
+    entry = {
+        "case_id": archive["case_id"],
+        "settings_hash": archive["settings_hash"],
+        "result_hash": archive["result_hash"],
+        "created_at": archive["created_at"],
+        "path": relative_posix_path(archive_path, config_dir),
+        "phase1": {
+            "mode": phase1.get("mode"),
+            "burn_model": phase1.get("burn_model"),
+            "phase_angle_deg": phase1.get("phase_angle_deg"),
+            "delta_v_m_s": phase1.get("delta_v_m_s"),
+            "gamma_deg": phase1.get("gamma_deg"),
+        },
+        "scenario": scenario,
+        "environment": {
+            "atmospheric_drag_enabled": bool(drag.get("enabled", False)),
+            "atmospheric_drag_model": drag.get("model", "ISA76"),
+        },
+        "optimizer": {
+            "success": optimizer.get("success"),
+            "objective_mode": optimizer.get("objective_mode"),
+            "final_distance_km": optimizer.get("final_distance_km"),
+            "total_two_impulse_delta_v_m_s": optimizer.get("total_two_impulse_delta_v_m_s"),
+            "burn_duration_s": optimizer.get("burn_duration_s"),
+        }
+    }
+    if latest_path is not None:
+        entry["latest_alias_path"] = relative_posix_path(latest_path, config_dir)
+    return entry
+
+
+def update_solution_index(index_path, config, archive_path, latest_path=None):
+    config_dir = index_path.parent
+    if index_path.exists():
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            index = {}
+    else:
+        index = {}
+
+    cases = index.get("cases", [])
+    if not isinstance(cases, list):
+        cases = []
+
+    entry = build_index_entry(config, archive_path, config_dir, latest_path=latest_path)
+    cases = [case for case in cases if case.get("case_id") != entry["case_id"]]
+    cases.append(entry)
+    cases.sort(key=lambda case: str(case.get("created_at", "")))
+
+    index = {
+        "schema_version": 1,
+        "source": "J2PolarHohmannShooting.py",
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "latest_case_id": entry["case_id"],
+        "cases": cases
+    }
+    index_path.write_text(json.dumps(index, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def matlab_burn_model_name(burn_model):
     model = str(burn_model).strip().lower()
     if model == "continuous":
@@ -234,14 +391,36 @@ def build_matlab_mission_config(output, phase1_mode="CUSTOM_IMPULSE"):
     }
 
 
+def archive_matlab_mission_config(config, latest_path=None, archive_dir=None, index_path=None, created_at=None):
+    latest_path = Path(latest_path) if latest_path is not None else Path("configs/latest_python_solution.json")
+    config_dir = latest_path.parent
+    archive_dir = Path(archive_dir) if archive_dir is not None else config_dir / "python_runs"
+    index_path = Path(index_path) if index_path is not None else config_dir / "python_solution_index.json"
+
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+
+    config = attach_archive_metadata(config, created_at=created_at)
+    archive_path = archive_dir / f"{config['archive']['case_id']}.json"
+    archive_path.write_text(
+        json.dumps(to_jsonable(config), indent=2, sort_keys=True),
+        encoding="utf-8"
+    )
+    update_solution_index(index_path, config, archive_path, latest_path=latest_path)
+    return config, archive_path, index_path
+
+
 def save_matlab_mission_config(output, path="configs/latest_python_solution.json", phase1_mode="CUSTOM_IMPULSE"):
     config = build_matlab_mission_config(output, phase1_mode=phase1_mode)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    config, archive_path, index_path = archive_matlab_mission_config(config, latest_path=path)
     path.write_text(
         json.dumps(to_jsonable(config), indent=2, sort_keys=True),
         encoding="utf-8"
     )
+    print(f"Archived MATLAB mission config: {archive_path}")
+    print(f"Updated MATLAB config index: {index_path}")
     return path
 
 

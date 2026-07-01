@@ -12,7 +12,7 @@
 - Phase 3 re-entry setup: `HOHMANN`, `R_BAR_200_FPA`
 - Phase 4 re-entry vehicle shape: `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, `TPS_MIN`
 
-방치되어 있던 `LAMBERT` mode는 active code에서 제거했다. 또한 과거의 `continuous` burn alias는 실제 low-thrust spiral 모델과 혼동될 수 있으므로 더 이상 허용하지 않는다. 짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션은 명확하게 `FINITE_BURN`으로만 사용한다.
+짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션을 `FINITE_BURN`으로 사용한다.
 
 ---
 
@@ -314,7 +314,49 @@ LOS 판단은 두 vehicle을 잇는 line segment와 Earth sphere의 관계로 �
 - `min_los_elevation_deg`: re-entry vehicle 기준 chaser elevation 최소값
 - `first_los_loss_time_s`: 처음 LOS가 끊긴 시간
 
-중요한 limitation은 plasma blackout physics가 아직 없다는 점이다. 즉, 현재 LOS는 geometry-only check이다. 실제 blackout-free communication을 보려면 electron density, plasma frequency, RF frequency, antenna pointing, link budget까지 추가해야 한다.
+현재 limitation으로 LOS가 plasma blackout physics를 고려하지 않는 단순한 모델이라는 점이 있다. 실제 blackout phsics를 구현하려면 electron density, plasma frequency, RF frequency, antenna pointing, link budget 등을 고려해야 한다.
+
+## 12. Python optimization layer
+
+본 프로젝트에서 Python은 MATLAB을 대체하는 simulator가 아니라, MATLAB mission run에 들어갈 핵심 tuning parameter를 찾는 outer-loop optimization layer이다. MATLAB은 전체 mission sequence와 visualization을 담당하고, Python은 Phase 1 `CUSTOM_IMPULSE`에 필요한 값을 사전에 탐색한다.
+
+Python optimization의 기본 decision variable은 다음 세 개이다.
+
+```text
+p = [phase_angle_deg, delta_v_m_s, gamma_deg]
+```
+
+- `phase_angle_deg`: chaser가 burn을 시작할 target-relative phase condition
+- `delta_v_m_s`: 첫 번째 maneuver의 commanded delta-V magnitude
+- `gamma_deg`: local tangential direction 기준 radial tilt angle
+
+`J2PolarHohmann.py`는 Python 쪽 propagation과 burn execution model을 제공하고, `J2PolarHohmannShooting.py`는 이 propagation을 반복 호출하면서 shooting / constrained optimization을 수행한다. 즉 Python은 “한 번의 mission을 예쁘게 그리는 도구”라기보다, MATLAB에 넣을 `phase angle`, `delta-V`, `gamma` 조합을 찾는 search engine에 가깝다.
+
+현재 optimizer는 먼저 rendezvous position residual을 줄여 feasible manifold에 접근한 뒤, `two_impulse_total` objective에서는 다음 값을 줄이는 방향으로 움직인다.
+
+```text
+objective = first_burn_delta_v + terminal_relative_speed
+```
+
+여기서 `terminal_relative_speed`는 Phase 1 종료 뒤 target-relative velocity를 의미하며, 실제 mission에서는 이후 Phase 2 hold trim / braking budget으로 연결된다. 따라서 Python 결과의 `total_two_impulse_delta_v_m_s`는 단순히 첫 burn 하나만 보는 값이 아니라, “첫 maneuver + terminal cleanup demand”의 개념에 더 가깝다.
+
+`IMPULSIVE`와 `FINITE_BURN`은 Python에서도 분리되어 계산된다. `FINITE_BURN`은 low-thrust spiral이 아니라 같은 delta-V를 finite firing duration으로 펼친 모델이다. 이 때문에 같은 scenario라도 `IMPULSIVE` 결과와 `FINITE_BURN` 결과의 optimal `phase_angle`, `delta-V`, `gamma`가 달라질 수 있다. 두 결과를 같은 파일에 덮어쓰면 재사용성이 크게 떨어지므로, 현재 구조는 Python run을 archive/index 형태로 보존한다.
+
+Archive 저장 구조는 다음과 같다.
+
+```text
+configs/
+  latest_python_solution.json
+  python_solution_index.json
+  python_runs/
+    <case_id>.json
+```
+
+- `latest_python_solution.json`: 가장 최근 Python 결과를 가리키는 compatibility alias
+- `python_runs/<case_id>.json`: 개별 run 결과를 보존하는 archive file
+- `python_solution_index.json`: MATLAB이 burn model, scenario, drag setting, `case_id`, `settings_hash`로 결과를 찾기 위한 index
+
+이 구조의 핵심 목적은 비싼 Python optimization을 반복 실행하지 않는 것이다. 한 번 계산된 `IMPULSIVE` 또는 `FINITE_BURN` 결과는 `case_id`와 `settings_hash`를 통해 다시 불러올 수 있고, MATLAB은 명시적인 JSON path가 없을 때 index에서 현재 설정과 가장 잘 맞는 archived case를 자동 선택한다.
 
 ---
 
@@ -338,6 +380,8 @@ Python dependency를 설치한다.
 pip install -r requirements.txt
 ```
 
+Python workflow는 `J2PolarHohmann.py`의 propagation model을 사용해 Phase 1 maneuver parameter를 반복 평가하고, `J2PolarHohmannShooting.py`가 그 결과를 MATLAB에서 바로 읽을 수 있는 JSON으로 export하는 구조이다. 일반적으로 MATLAB을 여러 번 돌려보기 전에 Python을 한 번 실행해 `CUSTOM_IMPULSE`의 `phase_angle`, `delta_v`, `gamma`를 먼저 갱신한다.
+
 기본 impulsive optimization을 실행하고 MATLAB config를 저장한다.
 
 ```bash
@@ -358,6 +402,16 @@ python J2PolarHohmannShooting.py --no-plot --atmospheric-drag isa76 --matlab-con
 
 Python script는 output path의 parent directory가 없으면 자동으로 생성한다.
 
+현재 Python export는 단일 `latest` 파일만 덮어쓰지 않고, 결과를 archive에도 저장한다.
+
+- `configs/latest_python_solution.json`: 가장 최근 결과 alias
+- `configs/python_runs/<case_id>.json`: 개별 run 보존 파일
+- `configs/python_solution_index.json`: MATLAB 자동 선택용 index
+
+`case_id`에는 burn model, drag setting, altitude pair, phase angle, settings hash, result hash, timestamp가 들어간다. 따라서 `IMPULSIVE`와 `FINITE_BURN` 결과가 서로 덮어쓰이지 않는다.
+
+이미 계산된 결과를 확인하려면 `configs/python_solution_index.json`을 보면 된다. 이 파일에는 각 run의 `case_id`, `settings_hash`, burn model, scenario altitude, drag 설정, optimizer summary가 들어 있다.
+
 ## 3. MATLAB에서 Python JSON 불러오기
 
 MATLAB에서 environment variable을 설정한다.
@@ -368,6 +422,21 @@ Main_Mission_Simulator
 ```
 
 JSON에 들어있는 값만 override된다. JSON에 없는 값은 `Mission_Config.m`과 script default가 유지된다.
+
+명시적인 JSON path를 주지 않으면 MATLAB은 `configs/python_solution_index.json`에서 현재 설정과 맞는 archived result를 자동으로 고른다.
+
+```matlab
+setenv('RENDEZVOUS_CONFIG_JSON','')
+setenv('RENDEZVOUS_BURN_MODEL','IMPULSIVE')
+Main_Mission_Simulator
+```
+
+특정 run을 정확히 고정하려면 `case_id`를 사용한다.
+
+```matlab
+setenv('RENDEZVOUS_CONFIG_CASE_ID','impulsive_drag-off_h300.0-500.0_phase90.0_31c1e45c_410e0069_20260630_134559Z')
+Main_Mission_Simulator
+```
 
 ## 4. Burn model 선택
 
@@ -557,23 +626,28 @@ ISA76-style density helper이다. MATLAB `atmosisa`가 가능하면 사용하고
 
 ### `J2PolarHohmann.py`
 
-Python-side propagation model과 burn model helper가 들어 있다.
+Python-side propagation model과 burn model helper가 들어 있다. MATLAB full mission을 그대로 복제하는 목적은 아니며, Phase 1 parameter search에 필요한 target/chaser propagation, impulsive burn, finite burn, drag option을 제공한다.
 
 ### `J2PolarHohmannShooting.py`
 
-Phase 1 parameter optimization과 MATLAB JSON export를 담당한다.
+Phase 1 parameter optimization과 MATLAB JSON export를 담당한다. Optimization variable은 `phase_angle_deg`, `delta_v_m_s`, `gamma_deg`이며, 결과는 `configs/latest_python_solution.json`과 `configs/python_runs/<case_id>.json`에 저장되고 `configs/python_solution_index.json`에 등록된다.
+
+### `configs/python_solution_index.json`
+
+Python optimization 결과 archive의 lookup table이다. MATLAB은 명시적인 `RENDEZVOUS_CONFIG_JSON`이 없으면 이 index를 읽고 현재 burn model, scenario altitude, atmospheric drag setting과 가장 잘 맞는 Python result를 자동 선택한다.
 
 ## 11. 권장 workflow
 
 정밀 run을 하려면 다음 순서를 권장한다.
 
 1. Python shooting으로 Phase 1 값을 찾는다.
-2. `configs/latest_python_solution.json`을 저장한다.
-3. MATLAB에서 `RENDEZVOUS_CONFIG_JSON`으로 JSON을 불러온다.
-4. `RENDEZVOUS_PHASE3_MODE`로 Phase 3 mode를 선택한다.
-5. `RENDEZVOUS_REENTRY_SHAPE`로 shape를 선택한다.
-6. MATLAB run 결과의 Phase 1 miss, Phase 3 FPA, Phase 4 heat/LOS diagnostic을 확인한다.
-7. 필요한 경우 Python optimization 조건이나 JSON re-entry option을 조정한다.
+2. Python export가 `latest_python_solution.json`, `python_runs/<case_id>.json`, `python_solution_index.json`을 생성하는지 확인한다.
+3. MATLAB에서 exact file을 쓰고 싶으면 `RENDEZVOUS_CONFIG_JSON`을 지정한다.
+4. MATLAB에서 자동 선택을 쓰고 싶으면 `RENDEZVOUS_CONFIG_JSON`을 비우고 `RENDEZVOUS_BURN_MODEL` 또는 `RENDEZVOUS_CONFIG_CASE_ID`를 지정한다.
+5. `RENDEZVOUS_PHASE3_MODE`로 Phase 3 mode를 선택한다.
+6. `RENDEZVOUS_REENTRY_SHAPE` 또는 향후 capsule/vehicle entry type option으로 entry body를 선택한다.
+7. MATLAB run 결과의 Phase 1 miss, Phase 3 FPA, Phase 4 LOS / communication diagnostic을 확인한다.
+8. 필요한 경우 Python optimization 조건, JSON scenario, communication setting을 조정한다.
 
 ## 12. 현재 limitation
 
@@ -589,7 +663,7 @@ Phase 1 parameter optimization과 MATLAB JSON export를 담당한다.
 
 # 결론 및 제언
 
-현재 코드는 mission-level rendezvous-to-entry simulator로서 구조가 꽤 명확해졌다. Python은 Phase 1 parameter search와 JSON export를 담당하고, MATLAB은 mission propagation과 visualization을 담당한다. Active MATLAB path에서는 방치된 Lambert option과 legacy Phase 3 block을 제거했고, finite burn / atmospheric drag / re-entry / LOS diagnostic이 같은 workflow 안에서 동작한다.
+현재 코드는 mission-level rendezvous-to-entry simulator로서 구조가 꽤 명확해졌다. Python은 Phase 1 parameter search, JSON export, run archive/index 관리를 담당하고, MATLAB은 mission propagation과 visualization을 담당한다. Active MATLAB path에서는 방치된 Lambert option과 legacy Phase 3 block을 제거했고, finite burn / atmospheric drag / re-entry / LOS diagnostic이 같은 workflow 안에서 동작한다.
 
 다음 단계로 가장 추천하는 개선은 세 가지이다.
 
@@ -601,6 +675,9 @@ Phase 1 parameter optimization과 MATLAB JSON export를 담당한다.
 
 3. **Regression test / batch runner 추가**
    기능이 많아졌으므로, 대표 scenario를 자동으로 돌려 Phase 1 miss, Phase 3 FPA, Phase 4 max heat flux, LOS maintained 여부를 저장하는 batch regression script가 필요하다.
+
+4. **Chamber heat load budget 및 correction burn phase 추가**
+   현재 연소 Chamber heat load budget은 설정되어있지 않지만 overheat 될 경우 `MULTI_HOHMANN` 모드를 활용할 수 있도록 구현되어있다. 실제 mission을 모사하기 위해서는 매 Maneuver마다 생긴 오차를 보정해주는 Correction burn phase를 추가해야 한다.
 
 ---
 

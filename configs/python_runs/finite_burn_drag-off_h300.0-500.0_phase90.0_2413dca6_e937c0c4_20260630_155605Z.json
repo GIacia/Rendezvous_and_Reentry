@@ -1,0 +1,96 @@
+{
+  "archive": {
+    "case_id": "finite_burn_drag-off_h300.0-500.0_phase90.0_2413dca6_e937c0c4_20260630_155605Z",
+    "created_at": "2026-06-30T15:56:05Z",
+    "result_hash": "e937c0c4aa423666",
+    "schema_version": 1,
+    "settings_hash": "2413dca603adce55",
+    "settings_signature": {
+      "burn_model": "FINITE_BURN",
+      "desired_rel_lvlh_m": [
+        0.0,
+        -5000.0,
+        0.0
+      ],
+      "environment": {
+        "atmospheric_drag": {
+          "chaser_area_m2": 4.0,
+          "chaser_cd": 2.2,
+          "co_rotate_atmosphere": true,
+          "earth_rotation_rad_s": 7.2921159e-05,
+          "enabled": false,
+          "model": "ISA76",
+          "target_area_m2": 4.0,
+          "target_cd": 2.2,
+          "target_mass_kg": 2000.0,
+          "use_matlab_atmosisa": true
+        }
+      },
+      "maneuver": {
+        "finite_burn_dt_s": 0.5,
+        "finite_burn_isp_s": 200.0,
+        "finite_burn_thrust_N": 300.0,
+        "initial_mass_kg": 2000.0
+      },
+      "phase1_mode": "CUSTOM_IMPULSE",
+      "scenario": {
+        "h_chaser_km": 300.0,
+        "h_target_km": 500.0,
+        "initial_chaser_angle_deg": 0.0,
+        "initial_phase_angle_deg": 90.0
+      },
+      "schema_version": 1,
+      "source": "J2PolarHohmannShooting.py"
+    }
+  },
+  "environment": {
+    "atmospheric_drag": {
+      "chaser_area_m2": 4.0,
+      "chaser_cd": 2.2,
+      "co_rotate_atmosphere": true,
+      "earth_rotation_rad_s": 7.2921159e-05,
+      "enabled": false,
+      "model": "ISA76",
+      "target_area_m2": 4.0,
+      "target_cd": 2.2,
+      "target_mass_kg": 2000.0,
+      "use_matlab_atmosisa": true
+    }
+  },
+  "maneuver": {
+    "finite_burn_dt_s": 0.5,
+    "finite_burn_isp_s": 200.0,
+    "finite_burn_thrust_N": 300.0,
+    "initial_mass_kg": 2000.0
+  },
+  "optimizer": {
+    "burn_duration_s": 421.2916584615743,
+    "delivered_delta_v_m_s": 64.23420512177123,
+    "final_distance_km": 2.0333285112006505e-06,
+    "message": "Iteration limit reached",
+    "objective_mode": "two_impulse_total",
+    "success": false,
+    "terminal_relative_speed_m_s": 81.9582842786899,
+    "total_two_impulse_delta_v_m_s": 146.19248940051534
+  },
+  "phase1": {
+    "burn_model": "FINITE_BURN",
+    "delta_v_m_s": 64.23420512182543,
+    "desired_rel_lvlh_m": [
+      0.0,
+      -5000.0,
+      0.0
+    ],
+    "gamma_deg": -1.416324018086378,
+    "mode": "CUSTOM_IMPULSE",
+    "phase_angle_deg": 3.5663059471393224
+  },
+  "scenario": {
+    "h_chaser_km": 300.0,
+    "h_target_km": 500.0,
+    "initial_chaser_angle_deg": 0.0,
+    "initial_phase_angle_deg": 90.0
+  },
+  "schema_version": 1,
+  "source": "J2PolarHohmannShooting.py"
+}
