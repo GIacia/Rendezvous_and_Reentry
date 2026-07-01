@@ -13,6 +13,7 @@
 - Phase 4 re-entry vehicle shape: `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, `TPS_MIN`
 
 짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션을 `FINITE_BURN`으로 사용한다.
+짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션을 `FINITE_BURN`으로 사용한다.
 
 ---
 
@@ -675,6 +676,9 @@ Python optimization 결과 archive의 lookup table이다. MATLAB은 명시적인
 
 3. **Regression test / batch runner 추가**
    기능이 많아졌으므로, 대표 scenario를 자동으로 돌려 Phase 1 miss, Phase 3 FPA, Phase 4 max heat flux, LOS maintained 여부를 저장하는 batch regression script가 필요하다.
+
+4. **Chamber heat load budget 및 correction burn phase 추가**
+   현재 연소 Chamber heat load budget은 설정되어있지 않지만 overheat 될 경우 `MULTI_HOHMANN` 모드를 활용할 수 있도록 구현되어있다. 실제 mission을 모사하기 위해서는 매 Maneuver마다 생긴 오차를 보정해주는 Correction burn phase를 추가해야 한다.
 
 4. **Chamber heat load budget 및 correction burn phase 추가**
    현재 연소 Chamber heat load budget은 설정되어있지 않지만 overheat 될 경우 `MULTI_HOHMANN` 모드를 활용할 수 있도록 구현되어있다. 실제 mission을 모사하기 위해서는 매 Maneuver마다 생긴 오차를 보정해주는 Correction burn phase를 추가해야 한다.
