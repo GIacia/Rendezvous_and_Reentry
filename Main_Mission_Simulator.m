@@ -394,7 +394,7 @@ fprintf('\n[Phase 3] 3-DOF re-entry simulation start...\n');
 %   "HOHMANN"        : legacy direct FPA-targeted Hohmann-style descent.
 %   "R_BAR_200_FPA" : lower to 200 km, wait until below the target on R-bar,
 %                     then inject toward the 120 km / 4 deg FPA interface.
-reentry_mode = "R_BAR_200_FPA";
+reentry_mode = "HOHMANN";
 reentry_mode_env = getenv('RENDEZVOUS_PHASE3_MODE');
 if strlength(reentry_mode_env) > 0
     reentry_mode = string(reentry_mode_env);

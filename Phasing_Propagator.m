@@ -721,6 +721,7 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
     refine_span = get_param(custom_params, 'refine_span', 180); % local refinement half-width [s]
     refine_step = get_param(custom_params, 'refine_step', 2);  % local refinement spacing [s]
     pos_tol     = get_param(custom_params, 'capture_pos_tol', 1000); % warning threshold [m]
+    radius_tol  = get_param(custom_params, 'target_radius_tol', 100); % final orbit-radius tolerance [m]
 
     if pmode == 3
         max_wait = 360;
@@ -751,13 +752,21 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
 
     % First Hohmann maneuver at the numerically selected epoch.
     dv1_vec = hohmann_departure_delta_v_vec(X_st, target_r, sys);
+    dv1_vec = refine_hohmann_departure_delta_v( ...
+        sys, X_st, X_target_st, dv1_vec, target_r, maneuver_opts, dt_transfer, TOF, sub_hist.time_end);
     [X_st, X_target_st, dV1, burn_hist, ~] = execute_delta_v_maneuver( ...
         sys, X_st, X_target_st, dv1_vec, maneuver_opts, sub_hist.time_end, "hohmann_departure");
     dV_tot = dV_tot + dV1;
     sub_hist = append_hist(sub_hist, burn_hist);
 
-    [X_st, X_target_st, transfer_hist] = propagate_for_duration(X_st, X_target_st, sys, TOF, dt_transfer, sub_hist.time_end);
+    % Finite burns consume a non-negligible fraction of the transfer arc.  If
+    % we coast for the ideal impulsive half-period after that burn, arrival can
+    % occur well past the intended apoapsis/periapsis.  Target the propagated
+    % radius event instead so circularization happens at the requested orbit.
+    [X_st, X_target_st, transfer_hist, transfer_time] = ...
+        propagate_until_radius(X_st, X_target_st, sys, target_r, 1.5 * TOF, dt_transfer, sub_hist.time_end);
     sub_hist = append_hist(sub_hist, transfer_hist);
+    fprintf('     - transfer radius target reached after %.3f s (ideal TOF %.3f s)\n', transfer_time, TOF);
 
     % Circularization maneuver at arrival radius.
     dv2_vec = circularization_delta_v_vec(X_st, X_target_st, sys);
@@ -765,6 +774,13 @@ function [X_st, X_target_st, dV_tot, sub_hist] = execute_hohmann(sys, X_st, targ
         sys, X_st, X_target_st, dv2_vec, maneuver_opts, sub_hist.time_end, "hohmann_circularization");
     dV_tot = dV_tot + dV2;
     sub_hist = append_hist(sub_hist, burn_hist);
+
+    if maneuver_opts.burn_model == "FINITE_BURN" && abs(norm(X_st(1:3)) - target_r) > radius_tol
+        [X_st, X_target_st, dV_cleanup, cleanup_hist] = execute_radius_cleanup_transfer( ...
+            sys, X_st, X_target_st, target_r, maneuver_opts, dt_transfer, radius_tol, sub_hist.time_end);
+        dV_tot = dV_tot + dV_cleanup;
+        sub_hist = append_hist(sub_hist, cleanup_hist);
+    end
 
     if ~isempty(X_target_st)
         [rel_lvlh, rel_vel_lvlh] = relative_state_lvlh(X_st(1:6), X_target_st);
@@ -1082,6 +1098,163 @@ function [X_st, dV_mag] = apply_circularization_impulse(X_st, ~, X_target_st, sy
     X_st(7) = X_st(7) * exp(-dV_mag / (sys.Isp * sys.g0));
 end
 
+function dv_vec = refine_hohmann_departure_delta_v(sys, X_st, X_target_st, dv_nominal, target_r, maneuver_opts, dt_transfer, TOF, t_offset)
+    dv_vec = dv_nominal;
+    dV_nominal = norm(dv_nominal);
+    if dV_nominal <= 0
+        return;
+    end
+
+    direction = sign(target_r - norm(X_st(1:3)));
+    if direction == 0
+        return;
+    end
+
+    max_transfer_time = 2.0 * TOF;
+    [reaches_target, best_radius] = departure_reaches_radius( ...
+        sys, X_st, X_target_st, dv_nominal, target_r, maneuver_opts, dt_transfer, max_transfer_time, t_offset, direction);
+    if reaches_target
+        return;
+    end
+
+    scale_lo = 1.0;
+    scale_hi = 1.25;
+    best_miss = abs(best_radius - target_r);
+    while scale_hi <= 5.0
+        [reaches_target, best_radius_hi] = departure_reaches_radius( ...
+            sys, X_st, X_target_st, scale_hi * dv_nominal, target_r, maneuver_opts, ...
+            dt_transfer, max_transfer_time, t_offset, direction);
+        if reaches_target
+            break;
+        end
+        best_miss = min(best_miss, abs(best_radius_hi - target_r));
+        scale_lo = scale_hi;
+        scale_hi = 1.25 * scale_hi;
+    end
+
+    if ~reaches_target
+        error(['Hohmann departure could not be bracketed. ' ...
+               'Closest radius miss was %.3f km. Try higher thrust, smaller dt_burn, or MULTI_HOHMANN.'], ...
+              best_miss/1000);
+    end
+
+    for iter = 1:24
+        scale_mid = 0.5 * (scale_lo + scale_hi);
+        [mid_reaches, ~] = departure_reaches_radius( ...
+            sys, X_st, X_target_st, scale_mid * dv_nominal, target_r, maneuver_opts, ...
+            dt_transfer, max_transfer_time, t_offset, direction);
+        if mid_reaches
+            scale_hi = scale_mid;
+        else
+            scale_lo = scale_mid;
+        end
+    end
+
+    dv_vec = scale_hi * dv_nominal;
+    fprintf('     - departure dV corrected for propagated radius targeting: %.6f -> %.6f m/s (scale %.6f)\n', ...
+            dV_nominal, norm(dv_vec), scale_hi);
+end
+
+function [reaches_target, best_radius] = departure_reaches_radius(sys, X_st, X_target_st, dv_vec, target_r, maneuver_opts, dt_transfer, max_time, t_offset, direction)
+    [X_probe, T_probe, ~, ~, ~] = execute_delta_v_maneuver( ...
+        sys, X_st, X_target_st, dv_vec, maneuver_opts, t_offset, "hohmann_departure_targeting_probe");
+
+    r_prev = norm(X_probe(1:3));
+    if direction > 0
+        best_radius = r_prev;
+        reaches_target = r_prev >= target_r;
+    else
+        best_radius = r_prev;
+        reaches_target = r_prev <= target_r;
+    end
+    if reaches_target
+        return;
+    end
+
+    elapsed = 0;
+    moved_toward_target = false;
+    while elapsed < max_time - 1e-12
+        dt_eff = min(dt_transfer, max_time - elapsed);
+        [X_next, T_next] = rk4_step_chaser_target(X_probe, T_probe, sys, dt_eff);
+        r_next = norm(X_next(1:3));
+
+        if direction > 0
+            best_radius = max(best_radius, r_next);
+            reaches_target = r_next >= target_r;
+            moved_toward_target = moved_toward_target || r_next > r_prev;
+            moving_away = moved_toward_target && r_next < r_prev;
+        else
+            best_radius = min(best_radius, r_next);
+            reaches_target = r_next <= target_r;
+            moved_toward_target = moved_toward_target || r_next < r_prev;
+            moving_away = moved_toward_target && r_next > r_prev;
+        end
+
+        if reaches_target
+            return;
+        end
+        if moving_away && elapsed > 0.25 * max_time
+            return;
+        end
+
+        elapsed = elapsed + dt_eff;
+        X_probe = X_next;
+        T_probe = T_next;
+        r_prev = r_next;
+    end
+end
+
+function [X_st, X_target_st, dV_tot, hist] = execute_radius_cleanup_transfer(sys, X_st, X_target_st, target_r, maneuver_opts, dt_transfer, radius_tol, t_offset)
+    hist = init_hist();
+    dV_tot = 0;
+    max_passes = 3;
+    t_current = t_offset;
+
+    for pass = 1:max_passes
+        radius_error = norm(X_st(1:3)) - target_r;
+        if abs(radius_error) <= radius_tol
+            return;
+        end
+
+        r_current = norm(X_st(1:3));
+        a_trans = 0.5 * (r_current + target_r);
+        TOF = pi * sqrt(a_trans^3 / sys.mu);
+
+        fprintf('     - finite-burn radius cleanup %d: radius error %.3f km\n', ...
+                pass, radius_error/1000);
+
+        dv_depart = hohmann_departure_delta_v_vec(X_st, target_r, sys);
+        dv_depart = refine_hohmann_departure_delta_v( ...
+            sys, X_st, X_target_st, dv_depart, target_r, maneuver_opts, dt_transfer, TOF, t_current);
+        [X_st, X_target_st, dV1, burn_hist, ~] = execute_delta_v_maneuver( ...
+            sys, X_st, X_target_st, dv_depart, maneuver_opts, t_current, ...
+            sprintf("radius_cleanup_%d_departure", pass));
+        dV_tot = dV_tot + dV1;
+        hist = append_hist(hist, burn_hist);
+        t_current = hist.time_end;
+
+        [X_st, X_target_st, transfer_hist, transfer_time] = ...
+            propagate_until_radius(X_st, X_target_st, sys, target_r, 2.0 * TOF, dt_transfer, t_current);
+        hist = append_hist(hist, transfer_hist);
+        t_current = hist.time_end;
+        fprintf('     - cleanup transfer radius target reached after %.3f s\n', transfer_time);
+
+        dv_circ = circularization_delta_v_vec(X_st, X_target_st, sys);
+        [X_st, X_target_st, dV2, burn_hist, ~] = execute_delta_v_maneuver( ...
+            sys, X_st, X_target_st, dv_circ, maneuver_opts, t_current, ...
+            sprintf("radius_cleanup_%d_circularization", pass));
+        dV_tot = dV_tot + dV2;
+        hist = append_hist(hist, burn_hist);
+        t_current = hist.time_end;
+    end
+
+    final_error = norm(X_st(1:3)) - target_r;
+    if abs(final_error) > radius_tol
+        fprintf('     - warning: finite-burn cleanup ended with radius error %.3f km after %d passes.\n', ...
+                final_error/1000, max_passes);
+    end
+end
+
 %% --- Helper: Propagation ---
 function [X_chaser, X_target, hist] = propagate_for_duration(X_chaser, X_target, sys, duration, dt, t_offset)
     if nargin < 6, t_offset = 0; end
@@ -1092,6 +1265,72 @@ function [X_chaser, X_target, hist] = propagate_for_duration(X_chaser, X_target,
         [X_chaser, X_target] = rk4_step_chaser_target(X_chaser, X_target, sys, dt_eff);
         elapsed = elapsed + dt_eff;
         hist = log_full_state(hist, X_chaser, X_target, t_offset + elapsed);
+    end
+end
+
+function [X_chaser, X_target, hist, elapsed] = propagate_until_radius(X_chaser, X_target, sys, target_r, max_time, dt, t_offset)
+    if nargin < 7, t_offset = 0; end
+    hist = init_hist();
+    elapsed = 0;
+    r_prev = norm(X_chaser(1:3));
+    direction = sign(target_r - r_prev);
+
+    if abs(target_r - r_prev) <= 1e-6
+        hist = log_full_state(hist, X_chaser, X_target, t_offset);
+        return;
+    end
+
+    while elapsed < max_time - 1e-12
+        dt_eff = min(dt, max_time - elapsed);
+        X_prev = X_chaser;
+        T_prev = X_target;
+
+        [X_next, T_next] = rk4_step_chaser_target(X_prev, T_prev, sys, dt_eff);
+        r_next = norm(X_next(1:3));
+
+        crossed_target = (direction > 0 && r_next >= target_r) || ...
+                         (direction < 0 && r_next <= target_r);
+        if crossed_target
+            [X_chaser, X_target, t_cross] = refine_radius_crossing(sys, X_prev, T_prev, target_r, dt_eff);
+            elapsed = elapsed + t_cross;
+            hist = log_full_state(hist, X_chaser, X_target, t_offset + elapsed);
+            return;
+        end
+
+        elapsed = elapsed + dt_eff;
+        X_chaser = X_next;
+        X_target = T_next;
+        hist = log_full_state(hist, X_chaser, X_target, t_offset + elapsed);
+    end
+
+    error('Hohmann transfer did not reach target radius %.3f km within %.2f min.', ...
+          target_r/1000, max_time/60);
+end
+
+function [X_cross, T_cross, t_cross] = refine_radius_crossing(sys, X0, T0, target_r, dt_window)
+    lo = 0;
+    hi = dt_window;
+    X_cross = X0;
+    T_cross = T0;
+    t_cross = 0;
+    r0 = norm(X0(1:3));
+    direction = sign(target_r - r0);
+
+    for iter = 1:40
+        mid = 0.5 * (lo + hi);
+        [X_mid, T_mid] = propagate_state_only(X0, T0, sys, mid, min(1, max(mid/20, 1e-3)));
+        r_mid = norm(X_mid(1:3));
+
+        crossed_target = (direction > 0 && r_mid >= target_r) || ...
+                         (direction < 0 && r_mid <= target_r);
+        if crossed_target
+            hi = mid;
+            X_cross = X_mid;
+            T_cross = T_mid;
+            t_cross = mid;
+        else
+            lo = mid;
+        end
     end
 end
 
