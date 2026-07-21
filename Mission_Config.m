@@ -16,6 +16,7 @@ function sys = Mission_Config()
     sys.h_insert = 300e3;      % 300 km
     sys.h_wait   = 495e3;      % 495 km (Waiting Point)
     sys.h_reentry = 200e3;     % 200 km
+    sys.h_entry_interface = 120e3; % 120 km atmospheric entry interface
     sys.reentry_flight_path_angle = 4 * pi/180; % 120 km interface FPA magnitude [rad]
     sys.inc = pi/2;            % Polar orbit inclination [rad]
 

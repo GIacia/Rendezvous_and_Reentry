@@ -6,9 +6,13 @@ fprintf('================================================\n\n');
 
 %% 1. Initialization
 sys = Mission_Config();
-mission_cfg = load_mission_json_config_local(sys);
+run_cfg = load_run_config_local();
+sys = apply_run_config_to_sys_local(sys, run_cfg);
+mission_cfg = load_mission_json_config_local(sys, run_cfg);
 sys = apply_json_to_sys_local(sys, mission_cfg);
-sys = apply_environment_env_overrides_local(sys);
+sys = apply_run_config_to_sys_local(sys, run_cfg);
+sys = apply_environment_env_overrides_local(sys, run_cfg);
+sys = refresh_derived_sys_local(sys);
 print_environment_config_local(sys);
 
 % Budget Tracking Table
@@ -18,6 +22,8 @@ Budget = table('Size',[0 4], 'VariableTypes',{'string','double','double','double
 m_current = sys.Chaser_Mass_Init;
 initial_chaser_angle = get_json_angle_rad_local(mission_cfg, {'scenario','initial_chaser_angle_deg'}, 0);
 initial_phase_angle = get_json_angle_rad_local(mission_cfg, {'scenario','initial_phase_angle_deg'}, pi/2);
+initial_chaser_angle = get_run_angle_deg_local(run_cfg, {'scenario','initial_chaser_angle_deg'}, initial_chaser_angle);
+initial_phase_angle = get_run_angle_deg_local(run_cfg, {'scenario','initial_phase_angle_deg'}, initial_phase_angle);
 
 % Initial chaser state.
 [x_insert, v_insert_vec] = circular_polar_state_local(sys.Re + sys.h_insert, initial_chaser_angle, sys);
@@ -53,17 +59,13 @@ custom_params.gamma_unit       = "rad"; % "rad" or "deg"
 % "FINITE_BURN" to execute the same delta-V over a short high-thrust burn.
 % phase_angle, delta_v, and gamma parameters.
 custom_params.burn_model = sys.maneuver.default_burn_model;
-burn_model_env = strtrim(string(getenv('RENDEZVOUS_BURN_MODEL')));
-if strlength(burn_model_env) > 0
-    custom_params.burn_model = upper(burn_model_env);
-end
 custom_params.burn_direction_mode = sys.maneuver.direction_mode;
 custom_params.finite_burn_thrust = sys.maneuver.finite_burn_thrust; % [N]
 custom_params.finite_burn_isp = sys.maneuver.finite_burn_isp;       % [s]
 custom_params.dt_burn = sys.maneuver.finite_burn_dt;                % [s]
 custom_params.max_single_burn_duration = sys.maneuver.max_single_burn_duration; % [s]
 custom_params.max_single_burn_delta_v = sys.maneuver.max_single_burn_delta_v;   % [m/s]
-custom_params.use_thrust_noise = false;
+custom_params.use_thrust_noise = get_run_bool_field_local(run_cfg, {'maneuver','use_thrust_noise'}, false);
 custom_params.multi_hohmann_legs = []; % [] lets MULTI_HOHMANN choose from thermal limits.
 
 % Phase 1 target relative position in the target LVLH frame [m].
@@ -83,6 +85,8 @@ custom_params.min_capture_time = 0;     % [s] raise to ignore very early local m
 % Mode options: "CUSTOM_IMPULSE", "HOHMANN", "MULTI_HOHMANN"
 phasing_mode = "CUSTOM_IMPULSE";
 [phasing_mode, custom_params] = apply_json_to_phase1_local(phasing_mode, custom_params, mission_cfg);
+[phasing_mode, custom_params] = apply_run_config_to_phase1_local(phasing_mode, custom_params, run_cfg);
+[phasing_mode, custom_params] = apply_phase1_env_overrides_local(phasing_mode, custom_params, run_cfg);
 
 [X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, 1);
 m_current = X_chaser(14);
@@ -123,24 +127,9 @@ fprintf('\n[Phase 2] Starting waypoint-impulsive +R-bar approach...\n');
 %     braking impulse to hold before the next hop.
 %   - No state overwriting: all corrections are impulses + free propagation.
 % -------------------------------------------------------------------------
-p2 = struct();
-p2.dt = 1.0;                         % [s] propagation step during proximity ops
-p2.S2 = [0; -5000; 0];               % [m] -V-bar hold point after Phase 1
-p2.S3 = [NaN; NaN; NaN];             % [m] determined by first V-bar crossing
-p2.S4_R_abs = 30;                    % [m] final stand-off distance on the same R-bar side as S3
-p2.S4 = [NaN; NaN; NaN];             % [m] determined after S3 is detected
-p2.initial_S2_tol = 50.0;            % [m] if Phase 1 is farther, insert cleanup leg to S2
-p2.tof_initial_s2 = 1200;            % [s] cleanup transfer time to S2, only used if needed
-p2.delta_R_cycloid = 400;            % [m] maximum radial excursion magnitude for the cycloid
-p2.vbar_burn_sign = -1;              % -1 means apply the S2 impulse in the -V-bar direction
-p2.vbar_cross_tol = 1.0;             % [m] acceptable error for detecting first V-bar crossing
-p2.max_cycloid_orbits = 4.0;         % safety limit for S2->S3 free drift
-p2.rbar_hop_count = 8;               % number of S3->S4 R-bar hops
-p2.tof_hop = 300;                    % [s] transfer time per R-bar hop
-p2.capture_pos_tol = 0.25;           % [m] terminal position tolerance at S4
-p2.max_terminal_refines = 4;         % extra S4 targeting attempts if nonlinear drift remains
-p2.tof_terminal_refine = 180;        % [s] time per final retargeting leg
-p2.Isp_fallback_s = 220;             % [s] used only if Mission_Config has no Isp field
+p2 = default_phase2_config_local();
+p2 = apply_json_to_phase2_local(p2, mission_cfg);
+p2 = apply_run_config_to_phase2_local(p2, run_cfg);
 
 % Current actual relative state after Phase 1
 [rel0_lvlh, vrel0_lvlh] = rel_state_lvlh_local(X_chaser, X_target);
@@ -390,26 +379,17 @@ Budget = [Budget; {"Phase 2: Cycloid + R-bar", dV_p2, fuel_p2, m_current}];
 %% 4. Phase 3: Re-entry
 fprintf('\n[Phase 3] 3-DOF re-entry simulation start...\n');
 
-% Select Phase 3 mode here.
-%   "HOHMANN"        : legacy direct FPA-targeted Hohmann-style descent.
-%   "R_BAR_200_FPA" : lower to 200 km, wait until below the target on R-bar,
-%                     then inject toward the 120 km / 4 deg FPA interface.
-reentry_mode = "HOHMANN";
-reentry_mode_env = getenv('RENDEZVOUS_PHASE3_MODE');
-if strlength(reentry_mode_env) > 0
-    reentry_mode = string(reentry_mode_env);
-end
+phase3_cfg = default_phase3_config_local();
+phase3_cfg = apply_json_to_phase3_local(phase3_cfg, mission_cfg);
+phase3_cfg = apply_run_config_to_phase3_local(phase3_cfg, run_cfg);
+phase3_cfg = apply_phase3_env_overrides_local(phase3_cfg, run_cfg);
+reentry_mode = phase3_cfg.mode;
 fprintf('   selected Phase 3 mode: %s\n', reentry_mode);
 
-% Set true to charge propellant for the final 200 km -> 120 km injection in
-% R_BAR_200_FPA mode. The default keeps this injection fuel-excluded.
-charge_final_reentry_fuel = false;
-charge_final_reentry_fuel_env = getenv('RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL');
-if strlength(charge_final_reentry_fuel_env) > 0
-    charge_final_reentry_fuel = parse_bool_setting_local(charge_final_reentry_fuel_env);
-end
-custom_params.charge_final_reentry_fuel = charge_final_reentry_fuel;
-fprintf('   charge final 200 km -> 120 km injection fuel: %s\n', bool_label_local(charge_final_reentry_fuel));
+custom_params = apply_phase3_config_to_params_local(custom_params, phase3_cfg);
+fprintf('   parking altitude: %.1f km, entry interface: %.1f km, target FPA: %.2f deg\n', ...
+        sys.h_reentry/1000, sys.h_entry_interface/1000, rad2deg(sys.reentry_flight_path_angle));
+fprintf('   charge final parking -> interface injection fuel: %s\n', bool_label_local(phase3_cfg.charge_final_reentry_fuel));
 
 X_orbiting_chaser_entry_relay0 = X_chaser;
 
@@ -425,11 +405,11 @@ elseif reentry_mode == "R_BAR_200_FPA"
 
     fprintf('   final altitude: %.2f km\n', (norm(X_chaser(1:3)) - sys.Re)/1000);
     if reentry_info.final_injection_fuel_charged
-        fprintf('   final 200 km -> 120 km injection dV %.4f m/s and fuel %.4f kg are included in Phase 3 budget.\n', ...
-                reentry_info.final_injection_dV, reentry_info.final_injection_fuel);
+        fprintf('   final %.0f km -> %.0f km injection dV %.4f m/s and fuel %.4f kg are included in Phase 3 budget.\n', ...
+                sys.h_reentry/1000, sys.h_entry_interface/1000, reentry_info.final_injection_dV, reentry_info.final_injection_fuel);
     else
-        fprintf('   final 200 km -> 120 km injection dV %.4f m/s is included in Phase 3 dV, but its fuel is excluded.\n', ...
-                reentry_info.final_injection_dV);
+        fprintf('   final %.0f km -> %.0f km injection dV %.4f m/s is included in Phase 3 dV, but its fuel is excluded.\n', ...
+                sys.h_reentry/1000, sys.h_entry_interface/1000, reentry_info.final_injection_dV);
     end
 
 else
@@ -439,12 +419,12 @@ end
 m_current = X_chaser(14);
 Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
 
-[X_entry_interface, entry_interface_info] = entry_interface_state_from_hist_local(hist_p3, X_chaser, sys, 120e3);
+[X_entry_interface, entry_interface_info] = entry_interface_state_from_hist_local(hist_p3, X_chaser, sys, sys.h_entry_interface);
 phase3_elapsed_to_interface = entry_interface_info.time_s;
 fprintf('   selected entry interface: altitude %.3f km, FPA %.3f deg, time %.2f s after Phase 3 start\n', ...
         entry_interface_info.altitude_m/1000, entry_interface_info.fpa_deg, entry_interface_info.time_s);
 
-fprintf('\n[Phase 4] Atmospheric re-entry from 120 km interface...\n');
+fprintf('\n[Phase 4] Atmospheric re-entry from %.0f km interface...\n', sys.h_entry_interface/1000);
 entry_params = struct();
 entry_params.shape_name = sys.reentry_vehicle.selected_shape;
 [X_reentry_vehicle, ~, hist_reentry, reentry_atmo_info] = ...
@@ -529,7 +509,7 @@ plot3((sys.Re+sys.h_target)/1e3*cos(theta), zeros(1,100), (sys.Re+sys.h_target)/
 title('3D Mission Trajectory (Earth Centered Inertial)');
 xlabel('X (km)'); ylabel('Y (km)'); zlabel('Z (km)');
 legend('Earth', 'Phase 1: Phasing (Ascent)', 'Phase 2: +R-bar Prox Ops', ...
-       'Phase 3: De-orbit to 120km', 'Phase 4: Atmospheric Entry RV', ...
+       sprintf('Phase 3: De-orbit to %.0fkm', sys.h_entry_interface/1000), 'Phase 4: Atmospheric Entry RV', ...
        'Orbiting Chaser / Relay', 'Target Orbit (500km)', 'Location', 'best');
 view(45, 30);
 
@@ -551,13 +531,13 @@ plot(time_p3 + time_p1(end) + time_p2(end), alt_p3/1e3, 'r-', 'LineWidth', 2);
 plot(time_reentry + entry_time_offset, hist_reentry.altitude/1e3, 'm-', 'LineWidth', 2);
 yline(sys.h_insert/1e3, 'k:', 'Insertion (300km)');
 yline(sys.h_target/1e3, 'k--', 'Target (500km)');
-yline(sys.h_reentry/1e3, 'k:', 'Re-entry (200km)');
-yline(120, 'm:', 'Entry Interface (120km)');
+yline(sys.h_reentry/1e3, 'k:', sprintf('Parking (%.0fkm)', sys.h_reentry/1000));
+yline(sys.h_entry_interface/1e3, 'm:', sprintf('Entry Interface (%.0fkm)', sys.h_entry_interface/1000));
 yline(sys.reentry_vehicle.terminal_altitude/1e3, 'm--', 'Entry Stop');
 
 title('Altitude Profile');
 xlabel('Mission Time (Hours)'); ylabel('Altitude (km)');
-legend('Phasing Maneuver', '+R-bar Prox Ops', 'De-orbit to 120km', 'Atmospheric Entry');
+legend('Phasing Maneuver', '+R-bar Prox Ops', sprintf('De-orbit to %.0fkm', sys.h_entry_interface/1000), 'Atmospheric Entry');
 grid on;
 
 % --- (3) Mass Depletion Profile ---
@@ -680,22 +660,371 @@ function fpa_deg = flight_path_angle_deg_local(r, v)
     fpa_deg = rad2deg(atan2(v_radial, v_horizontal));
 end
 
+%% Local helper functions for run configuration
+function run_cfg = load_run_config_local()
+    if exist('Mission_Run_Config', 'file') == 2
+        run_cfg = Mission_Run_Config();
+        fprintf('Loaded run control: Mission_Run_Config.m\n');
+    else
+        run_cfg = struct();
+        fprintf('No Mission_Run_Config.m found. Using built-in script defaults.\n');
+    end
+end
+
+function sys = apply_run_config_to_sys_local(sys, run_cfg)
+    sys.h_insert = get_run_number_field_local(run_cfg, {'scenario','h_insert_km'}, sys.h_insert/1e3) * 1e3;
+    sys.h_target = get_run_number_field_local(run_cfg, {'scenario','h_target_km'}, sys.h_target/1e3) * 1e3;
+    sys.h_wait = get_run_number_field_local(run_cfg, {'scenario','h_wait_km'}, sys.h_wait/1e3) * 1e3;
+    sys.h_reentry = get_run_number_field_local(run_cfg, {'phase3','parking_altitude_km'}, sys.h_reentry/1e3) * 1e3;
+    sys.h_entry_interface = get_run_number_field_local(run_cfg, {'phase3','entry_interface_altitude_km'}, sys.h_entry_interface/1e3) * 1e3;
+    sys.reentry_flight_path_angle = deg2rad(get_run_number_field_local(run_cfg, {'phase3','flight_path_angle_deg'}, rad2deg(sys.reentry_flight_path_angle)));
+
+    sys.maneuver.default_burn_model = get_run_string_field_local(run_cfg, {'maneuver','burn_model'}, sys.maneuver.default_burn_model);
+    sys.maneuver.finite_burn_thrust = get_run_number_field_local(run_cfg, {'maneuver','finite_burn_thrust_N'}, sys.maneuver.finite_burn_thrust);
+    sys.maneuver.finite_burn_isp = get_run_number_field_local(run_cfg, {'maneuver','finite_burn_isp_s'}, sys.maneuver.finite_burn_isp);
+    sys.maneuver.finite_burn_dt = get_run_number_field_local(run_cfg, {'maneuver','finite_burn_dt_s'}, sys.maneuver.finite_burn_dt);
+    sys.maneuver.max_single_burn_duration = get_run_number_field_local(run_cfg, {'maneuver','max_single_burn_duration_s'}, sys.maneuver.max_single_burn_duration);
+    sys.maneuver.max_single_burn_delta_v = get_run_number_field_local(run_cfg, {'maneuver','max_single_burn_delta_v_m_s'}, sys.maneuver.max_single_burn_delta_v);
+
+    sys.reentry_vehicle.selected_shape = get_run_string_field_local(run_cfg, {'reentry','shape'}, sys.reentry_vehicle.selected_shape);
+    sys.reentry_vehicle.dt = get_run_number_field_local(run_cfg, {'reentry','dt_s'}, sys.reentry_vehicle.dt);
+    sys.reentry_vehicle.max_time = get_run_number_field_local(run_cfg, {'reentry','max_time_s'}, sys.reentry_vehicle.max_time);
+    sys.reentry_vehicle.terminal_altitude = get_run_number_field_local(run_cfg, {'reentry','terminal_altitude_m'}, sys.reentry_vehicle.terminal_altitude);
+    sys.reentry_vehicle.lift_enabled = get_run_bool_field_local(run_cfg, {'reentry','lift_enabled'}, sys.reentry_vehicle.lift_enabled);
+    if has_run_path_local(run_cfg, {'reentry','aoa_deg'}) && ~isempty(get_run_value_local(run_cfg, {'reentry','aoa_deg'}, []))
+        sys.reentry_vehicle.aoa_deg = get_run_number_field_local(run_cfg, {'reentry','aoa_deg'}, 20);
+    end
+    sys.reentry_vehicle.bank_angle_deg = get_run_number_field_local(run_cfg, {'reentry','bank_angle_deg'}, sys.reentry_vehicle.bank_angle_deg);
+    sys.reentry_vehicle.los_margin_altitude = get_run_number_field_local(run_cfg, {'reentry','los_margin_altitude_m'}, sys.reentry_vehicle.los_margin_altitude);
+
+    if has_run_path_local(run_cfg, {'environment','atmospheric_drag'})
+        drag = run_cfg.environment.atmospheric_drag;
+        sys.environment.atmospheric_drag.enabled = get_run_bool_field_local(run_cfg, {'environment','atmospheric_drag','enabled'}, sys.environment.atmospheric_drag.enabled);
+        sys.environment.atmospheric_drag.model = get_run_string_field_local(run_cfg, {'environment','atmospheric_drag','model'}, sys.environment.atmospheric_drag.model);
+        sys.environment.atmospheric_drag.use_matlab_atmosisa = get_run_bool_field_local(run_cfg, {'environment','atmospheric_drag','use_matlab_atmosisa'}, sys.environment.atmospheric_drag.use_matlab_atmosisa);
+        sys.environment.atmospheric_drag.co_rotate_atmosphere = get_run_bool_field_local(run_cfg, {'environment','atmospheric_drag','co_rotate_atmosphere'}, sys.environment.atmospheric_drag.co_rotate_atmosphere);
+        if isfield(drag, 'earth_rotation_rad_s')
+            sys.environment.atmospheric_drag.earth_rotation_rad_s = get_run_number_field_local(run_cfg, {'environment','atmospheric_drag','earth_rotation_rad_s'}, sys.environment.atmospheric_drag.earth_rotation_rad_s);
+        end
+    end
+end
+
+function sys = refresh_derived_sys_local(sys)
+    r_insert = sys.Re + sys.h_insert;
+    r_wait = sys.Re + sys.h_wait;
+    a_transfer = 0.5 * (r_insert + r_wait);
+    sys.phase = pi * (1 - (a_transfer / r_wait)^1.5);
+end
+
+function [phasing_mode, custom_params] = apply_run_config_to_phase1_local(phasing_mode, custom_params, run_cfg)
+    phasing_mode = get_run_string_field_local(run_cfg, {'phase1','mode'}, phasing_mode);
+    custom_params.burn_model = get_run_string_field_local(run_cfg, {'maneuver','burn_model'}, custom_params.burn_model);
+    custom_params.finite_burn_thrust = get_run_number_field_local(run_cfg, {'maneuver','finite_burn_thrust_N'}, custom_params.finite_burn_thrust);
+    custom_params.finite_burn_isp = get_run_number_field_local(run_cfg, {'maneuver','finite_burn_isp_s'}, custom_params.finite_burn_isp);
+    custom_params.dt_burn = get_run_number_field_local(run_cfg, {'maneuver','finite_burn_dt_s'}, custom_params.dt_burn);
+    custom_params.max_single_burn_duration = get_run_number_field_local(run_cfg, {'maneuver','max_single_burn_duration_s'}, custom_params.max_single_burn_duration);
+    custom_params.max_single_burn_delta_v = get_run_number_field_local(run_cfg, {'maneuver','max_single_burn_delta_v_m_s'}, custom_params.max_single_burn_delta_v);
+    custom_params.use_thrust_noise = get_run_bool_field_local(run_cfg, {'maneuver','use_thrust_noise'}, custom_params.use_thrust_noise);
+    custom_params.multi_hohmann_legs = get_run_value_local(run_cfg, {'maneuver','multi_hohmann_legs'}, custom_params.multi_hohmann_legs);
+
+    if has_nonempty_run_value_local(run_cfg, {'phase1','phase_angle_deg'})
+        custom_params.phase_angle = get_run_number_field_local(run_cfg, {'phase1','phase_angle_deg'}, rad2deg(custom_params.phase_angle));
+        custom_params.phase_angle_unit = "deg";
+    elseif has_nonempty_run_value_local(run_cfg, {'phase1','phase_angle_rad'})
+        custom_params.phase_angle = get_run_number_field_local(run_cfg, {'phase1','phase_angle_rad'}, custom_params.phase_angle);
+        custom_params.phase_angle_unit = "rad";
+    end
+
+    custom_params.delta_v = get_run_number_field_local(run_cfg, {'phase1','delta_v_m_s'}, custom_params.delta_v);
+    if has_nonempty_run_value_local(run_cfg, {'phase1','gamma_deg'})
+        custom_params.gamma = get_run_number_field_local(run_cfg, {'phase1','gamma_deg'}, rad2deg(custom_params.gamma));
+        custom_params.gamma_unit = "deg";
+    elseif has_nonempty_run_value_local(run_cfg, {'phase1','gamma_rad'})
+        custom_params.gamma = get_run_number_field_local(run_cfg, {'phase1','gamma_rad'}, custom_params.gamma);
+        custom_params.gamma_unit = "rad";
+    end
+
+    custom_params.desired_rel_lvlh = get_run_vector_field_local(run_cfg, {'phase1','desired_rel_lvlh_m'}, custom_params.desired_rel_lvlh);
+    custom_params.time_step = get_run_number_field_local(run_cfg, {'phase1','time_step_s'}, custom_params.time_step);
+    custom_params.dt_phase = get_run_number_field_local(run_cfg, {'phase1','dt_phase_s'}, custom_params.dt_phase);
+    custom_params.dt_capture = get_run_number_field_local(run_cfg, {'phase1','dt_capture_s'}, custom_params.dt_capture);
+    custom_params.max_wait = get_run_number_field_local(run_cfg, {'phase1','max_wait_s'}, custom_params.max_wait);
+    custom_params.max_capture_time = get_run_number_field_local(run_cfg, {'phase1','max_capture_time_s'}, custom_params.max_capture_time);
+    custom_params.phase_tol = get_run_number_field_local(run_cfg, {'phase1','phase_tol_rad'}, custom_params.phase_tol);
+    custom_params.event_time_tol = get_run_number_field_local(run_cfg, {'phase1','event_time_tol_s'}, custom_params.event_time_tol);
+    custom_params.capture_pos_tol = get_run_number_field_local(run_cfg, {'phase1','capture_pos_tol_m'}, custom_params.capture_pos_tol);
+    custom_params.min_capture_time = get_run_number_field_local(run_cfg, {'phase1','min_capture_time_s'}, custom_params.min_capture_time);
+end
+
+function [phasing_mode, custom_params] = apply_phase1_env_overrides_local(phasing_mode, custom_params, run_cfg)
+    if ~get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true)
+        return;
+    end
+
+    burn_model_env = strtrim(string(getenv('RENDEZVOUS_BURN_MODEL')));
+    if strlength(burn_model_env) > 0
+        custom_params.burn_model = upper(burn_model_env);
+    end
+end
+
+function p2 = default_phase2_config_local()
+    p2 = struct();
+    p2.dt = 1.0;
+    p2.S2 = [0; -5000; 0];
+    p2.S3 = [NaN; NaN; NaN];
+    p2.S4_R_abs = 30;
+    p2.S4 = [NaN; NaN; NaN];
+    p2.initial_S2_tol = 50.0;
+    p2.tof_initial_s2 = 1200;
+    p2.delta_R_cycloid = 400;
+    p2.vbar_burn_sign = -1;
+    p2.vbar_cross_tol = 1.0;
+    p2.max_cycloid_orbits = 4.0;
+    p2.rbar_hop_count = 8;
+    p2.tof_hop = 300;
+    p2.capture_pos_tol = 0.25;
+    p2.max_terminal_refines = 4;
+    p2.tof_terminal_refine = 180;
+    p2.Isp_fallback_s = 220;
+end
+
+function p2 = apply_json_to_phase2_local(p2, cfg)
+    if isempty(fieldnames(cfg)) || ~isfield(cfg, 'phase2')
+        return;
+    end
+
+    p2.dt = get_json_number_local(cfg, {'phase2','dt_s'}, p2.dt);
+    p2.S2 = get_json_vector_local(cfg, {'phase2','S2_m'}, p2.S2);
+    p2.S4_R_abs = get_json_number_local(cfg, {'phase2','S4_R_abs_m'}, p2.S4_R_abs);
+    p2.initial_S2_tol = get_json_number_local(cfg, {'phase2','initial_S2_tol_m'}, p2.initial_S2_tol);
+    p2.tof_initial_s2 = get_json_number_local(cfg, {'phase2','tof_initial_s2_s'}, p2.tof_initial_s2);
+    p2.delta_R_cycloid = get_json_number_local(cfg, {'phase2','delta_R_cycloid_m'}, p2.delta_R_cycloid);
+    p2.vbar_burn_sign = get_json_number_local(cfg, {'phase2','vbar_burn_sign'}, p2.vbar_burn_sign);
+    p2.vbar_cross_tol = get_json_number_local(cfg, {'phase2','vbar_cross_tol_m'}, p2.vbar_cross_tol);
+    p2.max_cycloid_orbits = get_json_number_local(cfg, {'phase2','max_cycloid_orbits'}, p2.max_cycloid_orbits);
+    p2.rbar_hop_count = get_json_number_local(cfg, {'phase2','rbar_hop_count'}, p2.rbar_hop_count);
+    p2.tof_hop = get_json_number_local(cfg, {'phase2','tof_hop_s'}, p2.tof_hop);
+    p2.capture_pos_tol = get_json_number_local(cfg, {'phase2','capture_pos_tol_m'}, p2.capture_pos_tol);
+    p2.max_terminal_refines = get_json_number_local(cfg, {'phase2','max_terminal_refines'}, p2.max_terminal_refines);
+    p2.tof_terminal_refine = get_json_number_local(cfg, {'phase2','tof_terminal_refine_s'}, p2.tof_terminal_refine);
+    p2.Isp_fallback_s = get_json_number_local(cfg, {'phase2','Isp_fallback_s'}, p2.Isp_fallback_s);
+end
+
+function p2 = apply_run_config_to_phase2_local(p2, run_cfg)
+    p2.dt = get_run_number_field_local(run_cfg, {'phase2','dt_s'}, p2.dt);
+    p2.S2 = get_run_vector_field_local(run_cfg, {'phase2','S2_m'}, p2.S2);
+    p2.S4_R_abs = get_run_number_field_local(run_cfg, {'phase2','S4_R_abs_m'}, p2.S4_R_abs);
+    p2.initial_S2_tol = get_run_number_field_local(run_cfg, {'phase2','initial_S2_tol_m'}, p2.initial_S2_tol);
+    p2.tof_initial_s2 = get_run_number_field_local(run_cfg, {'phase2','tof_initial_s2_s'}, p2.tof_initial_s2);
+    p2.delta_R_cycloid = get_run_number_field_local(run_cfg, {'phase2','delta_R_cycloid_m'}, p2.delta_R_cycloid);
+    p2.vbar_burn_sign = get_run_number_field_local(run_cfg, {'phase2','vbar_burn_sign'}, p2.vbar_burn_sign);
+    p2.vbar_cross_tol = get_run_number_field_local(run_cfg, {'phase2','vbar_cross_tol_m'}, p2.vbar_cross_tol);
+    p2.max_cycloid_orbits = get_run_number_field_local(run_cfg, {'phase2','max_cycloid_orbits'}, p2.max_cycloid_orbits);
+    p2.rbar_hop_count = get_run_number_field_local(run_cfg, {'phase2','rbar_hop_count'}, p2.rbar_hop_count);
+    p2.tof_hop = get_run_number_field_local(run_cfg, {'phase2','tof_hop_s'}, p2.tof_hop);
+    p2.capture_pos_tol = get_run_number_field_local(run_cfg, {'phase2','capture_pos_tol_m'}, p2.capture_pos_tol);
+    p2.max_terminal_refines = get_run_number_field_local(run_cfg, {'phase2','max_terminal_refines'}, p2.max_terminal_refines);
+    p2.tof_terminal_refine = get_run_number_field_local(run_cfg, {'phase2','tof_terminal_refine_s'}, p2.tof_terminal_refine);
+    p2.Isp_fallback_s = get_run_number_field_local(run_cfg, {'phase2','Isp_fallback_s'}, p2.Isp_fallback_s);
+end
+
+function phase3_cfg = default_phase3_config_local()
+    phase3_cfg = struct();
+    phase3_cfg.mode = "HOHMANN";
+    phase3_cfg.charge_final_reentry_fuel = false;
+    phase3_cfg.target_radius_tol_m = 100;
+    phase3_cfg.dt_reentry_coast_s = 2;
+    phase3_cfg.max_reentry_coast_time_s = [];
+    phase3_cfg.dt_rbar_wait_s = 30;
+    phase3_cfg.max_rbar_wait_s = [];
+    phase3_cfg.rbar_vbar_tol_m = 10;
+    phase3_cfg.rbar_radial_tol_m = 50e3;
+end
+
+function phase3_cfg = apply_json_to_phase3_local(phase3_cfg, cfg)
+    if isempty(fieldnames(cfg))
+        return;
+    end
+
+    phase3_cfg.mode = get_json_string_local(cfg, {'phase3','mode'}, phase3_cfg.mode);
+    phase3_cfg.mode = get_json_string_local(cfg, {'reentry','phase3_mode'}, phase3_cfg.mode);
+    phase3_cfg.charge_final_reentry_fuel = get_json_bool_local(cfg, {'phase3','charge_final_reentry_fuel'}, phase3_cfg.charge_final_reentry_fuel);
+    phase3_cfg.target_radius_tol_m = get_json_number_local(cfg, {'phase3','target_radius_tol_m'}, phase3_cfg.target_radius_tol_m);
+    phase3_cfg.dt_reentry_coast_s = get_json_number_local(cfg, {'phase3','dt_reentry_coast_s'}, phase3_cfg.dt_reentry_coast_s);
+    phase3_cfg.max_reentry_coast_time_s = get_json_number_local(cfg, {'phase3','max_reentry_coast_time_s'}, phase3_cfg.max_reentry_coast_time_s);
+    phase3_cfg.dt_rbar_wait_s = get_json_number_local(cfg, {'phase3','dt_rbar_wait_s'}, phase3_cfg.dt_rbar_wait_s);
+    phase3_cfg.max_rbar_wait_s = get_json_number_local(cfg, {'phase3','max_rbar_wait_s'}, phase3_cfg.max_rbar_wait_s);
+    phase3_cfg.rbar_vbar_tol_m = get_json_number_local(cfg, {'phase3','rbar_vbar_tol_m'}, phase3_cfg.rbar_vbar_tol_m);
+    phase3_cfg.rbar_radial_tol_m = get_json_number_local(cfg, {'phase3','rbar_radial_tol_m'}, phase3_cfg.rbar_radial_tol_m);
+end
+
+function phase3_cfg = apply_run_config_to_phase3_local(phase3_cfg, run_cfg)
+    phase3_cfg.mode = get_run_string_field_local(run_cfg, {'phase3','mode'}, phase3_cfg.mode);
+    phase3_cfg.charge_final_reentry_fuel = get_run_bool_field_local(run_cfg, {'phase3','charge_final_reentry_fuel'}, phase3_cfg.charge_final_reentry_fuel);
+    phase3_cfg.target_radius_tol_m = get_run_number_field_local(run_cfg, {'phase3','target_radius_tol_m'}, phase3_cfg.target_radius_tol_m);
+    phase3_cfg.dt_reentry_coast_s = get_run_number_field_local(run_cfg, {'phase3','dt_reentry_coast_s'}, phase3_cfg.dt_reentry_coast_s);
+    phase3_cfg.max_reentry_coast_time_s = get_run_number_field_local(run_cfg, {'phase3','max_reentry_coast_time_s'}, phase3_cfg.max_reentry_coast_time_s);
+    phase3_cfg.dt_rbar_wait_s = get_run_number_field_local(run_cfg, {'phase3','dt_rbar_wait_s'}, phase3_cfg.dt_rbar_wait_s);
+    phase3_cfg.max_rbar_wait_s = get_run_number_field_local(run_cfg, {'phase3','max_rbar_wait_s'}, phase3_cfg.max_rbar_wait_s);
+    phase3_cfg.rbar_vbar_tol_m = get_run_number_field_local(run_cfg, {'phase3','rbar_vbar_tol_m'}, phase3_cfg.rbar_vbar_tol_m);
+    phase3_cfg.rbar_radial_tol_m = get_run_number_field_local(run_cfg, {'phase3','rbar_radial_tol_m'}, phase3_cfg.rbar_radial_tol_m);
+end
+
+function phase3_cfg = apply_phase3_env_overrides_local(phase3_cfg, run_cfg)
+    if ~get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true)
+        return;
+    end
+
+    reentry_mode_env = getenv('RENDEZVOUS_PHASE3_MODE');
+    if strlength(reentry_mode_env) > 0
+        phase3_cfg.mode = string(reentry_mode_env);
+    end
+
+    charge_final_reentry_fuel_env = getenv('RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL');
+    if strlength(charge_final_reentry_fuel_env) > 0
+        phase3_cfg.charge_final_reentry_fuel = parse_bool_setting_local(charge_final_reentry_fuel_env);
+    end
+end
+
+function custom_params = apply_phase3_config_to_params_local(custom_params, phase3_cfg)
+    custom_params.charge_final_reentry_fuel = phase3_cfg.charge_final_reentry_fuel;
+    custom_params.target_radius_tol = phase3_cfg.target_radius_tol_m;
+    custom_params.dt_reentry_coast = phase3_cfg.dt_reentry_coast_s;
+    custom_params.dt_rbar_wait = phase3_cfg.dt_rbar_wait_s;
+    custom_params.rbar_vbar_tol = phase3_cfg.rbar_vbar_tol_m;
+    custom_params.rbar_radial_tol = phase3_cfg.rbar_radial_tol_m;
+    if ~isempty(phase3_cfg.max_reentry_coast_time_s)
+        custom_params.max_reentry_coast_time = phase3_cfg.max_reentry_coast_time_s;
+    end
+    if ~isempty(phase3_cfg.max_rbar_wait_s)
+        custom_params.max_rbar_wait = phase3_cfg.max_rbar_wait_s;
+    end
+end
+
+function tf = has_run_path_local(s, path)
+    if ~isstruct(s)
+        tf = false;
+        return;
+    end
+    node = s;
+    for ii = 1:numel(path)
+        key = path{ii};
+        if ~isstruct(node) || ~isfield(node, key)
+            tf = false;
+            return;
+        end
+        node = node.(key);
+    end
+    tf = true;
+end
+
+function tf = has_nonempty_run_value_local(s, path)
+    tf = has_run_path_local(s, path) && ~isempty(get_run_value_local(s, path, []));
+end
+
+function value = get_run_value_local(s, path, default_value)
+    value = default_value;
+    if ~has_run_path_local(s, path)
+        return;
+    end
+
+    node = s;
+    for ii = 1:numel(path)
+        node = node.(path{ii});
+    end
+    if ~isempty(node)
+        value = node;
+    end
+end
+
+function value = get_run_number_field_local(s, path, default_value)
+    value = get_run_value_local(s, path, default_value);
+    if ischar(value) || isstring(value)
+        value = str2double(value);
+    end
+    if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ~isfinite(value)
+        value = default_value;
+    end
+end
+
+function value = get_run_string_field_local(s, path, default_value)
+    value = get_run_value_local(s, path, default_value);
+    if isempty(value)
+        value = default_value;
+    end
+    value = string(value);
+end
+
+function value = get_run_bool_field_local(s, path, default_value)
+    raw = get_run_value_local(s, path, default_value);
+    if islogical(raw)
+        value = raw;
+    elseif isnumeric(raw) && isscalar(raw)
+        value = raw ~= 0;
+    else
+        text_value = lower(strtrim(string(raw)));
+        if any(text_value == ["1", "true", "yes", "y", "on"])
+            value = true;
+        elseif any(text_value == ["0", "false", "no", "n", "off"])
+            value = false;
+        else
+            value = default_value;
+        end
+    end
+end
+
+function vec = get_run_vector_field_local(s, path, default_value)
+    vec = get_run_value_local(s, path, default_value);
+    if isempty(vec)
+        vec = default_value;
+    end
+    vec = vec(:);
+    if numel(vec) ~= numel(default_value) || ~isnumeric(vec) || any(~isfinite(vec))
+        vec = default_value(:);
+    end
+end
+
+function angle = get_run_angle_deg_local(s, path, default_value)
+    angle = default_value;
+    if has_nonempty_run_value_local(s, path)
+        angle = deg2rad(get_run_number_field_local(s, path, rad2deg(default_value)));
+    end
+end
+
 %% Local helper functions for JSON mission configuration
-function cfg = load_mission_json_config_local(sys)
+function cfg = load_mission_json_config_local(sys, run_cfg)
     cfg = struct();
     if nargin < 1
         sys = struct();
     end
+    if nargin < 2
+        run_cfg = struct();
+    end
 
-    config_path = strtrim(string(getenv('RENDEZVOUS_CONFIG_JSON')));
-    if strlength(config_path) == 0
-        config_path = strtrim(string(getenv('RENDEZVOUS_CONFIG')));
+    config_path = "";
+    selection_msg = "";
+    allow_env = get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true);
+    if allow_env
+        config_path = strtrim(string(getenv('RENDEZVOUS_CONFIG_JSON')));
+        if strlength(config_path) == 0
+            config_path = strtrim(string(getenv('RENDEZVOUS_CONFIG')));
+        end
+        if strlength(config_path) > 0
+            selection_msg = "explicit RENDEZVOUS_CONFIG_JSON";
+        end
     end
 
     if strlength(config_path) == 0
-        [config_path, selection_msg] = select_python_config_from_index_local(sys);
-    else
-        selection_msg = "explicit RENDEZVOUS_CONFIG_JSON";
+        python_mode = upper(get_run_string_field_local(run_cfg, {'python_config','mode'}, "AUTO"));
+        if python_mode == "NONE" || python_mode == "OFF" || python_mode == "DISABLED"
+            fprintf('Python optimizer JSON disabled by Mission_Run_Config.m. Using MATLAB/run-control defaults.\n');
+            return;
+        elseif python_mode == "FILE"
+            config_path = get_run_string_field_local(run_cfg, {'python_config','file'}, "");
+            selection_msg = "Mission_Run_Config.m python_config.file";
+        else
+            [config_path, selection_msg] = select_python_config_from_index_local(sys, run_cfg);
+        end
     end
 
     if strlength(config_path) == 0
@@ -715,9 +1044,12 @@ function cfg = load_mission_json_config_local(sys)
     end
 end
 
-function [config_path, selection_msg] = select_python_config_from_index_local(sys)
+function [config_path, selection_msg] = select_python_config_from_index_local(sys, run_cfg)
     config_path = "";
     selection_msg = "";
+    if nargin < 2
+        run_cfg = struct();
+    end
 
     root_dir = fileparts(mfilename('fullpath'));
     config_dir = fullfile(root_dir, 'configs');
@@ -737,10 +1069,29 @@ function [config_path, selection_msg] = select_python_config_from_index_local(sy
     end
 
     cases = index_cfg.cases;
-    desired_case_id = strtrim(string(getenv('RENDEZVOUS_CONFIG_CASE_ID')));
-    desired_hash = strtrim(string(getenv('RENDEZVOUS_CONFIG_HASH')));
-    desired_burn = desired_burn_model_for_index_local(sys);
-    [desired_drag_enabled, desired_drag_model] = desired_drag_for_index_local(sys);
+    allow_env = get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true);
+    python_mode = upper(get_run_string_field_local(run_cfg, {'python_config','mode'}, "AUTO"));
+
+    desired_case_id = "";
+    desired_hash = "";
+    if python_mode == "CASE_ID"
+        desired_case_id = strtrim(get_run_string_field_local(run_cfg, {'python_config','case_id'}, ""));
+    elseif python_mode == "HASH"
+        desired_hash = strtrim(get_run_string_field_local(run_cfg, {'python_config','hash'}, ""));
+    end
+    if allow_env
+        desired_case_id_env = strtrim(string(getenv('RENDEZVOUS_CONFIG_CASE_ID')));
+        desired_hash_env = strtrim(string(getenv('RENDEZVOUS_CONFIG_HASH')));
+        if strlength(desired_case_id_env) > 0
+            desired_case_id = desired_case_id_env;
+        end
+        if strlength(desired_hash_env) > 0
+            desired_hash = desired_hash_env;
+        end
+    end
+
+    desired_burn = desired_burn_model_for_index_local(sys, run_cfg);
+    [desired_drag_enabled, desired_drag_model] = desired_drag_for_index_local(sys, run_cfg);
 
     best_score = -inf;
     best_path = "";
@@ -798,11 +1149,24 @@ function [config_path, selection_msg] = select_python_config_from_index_local(sy
     if strlength(best_path) > 0
         config_path = best_path;
         selection_msg = sprintf("auto index match case %s", best_case_id);
+    elseif python_mode == "CASE_ID" && strlength(desired_case_id) > 0
+        error('Requested Python config case_id was not found: %s', char(desired_case_id));
+    elseif python_mode == "HASH" && strlength(desired_hash) > 0
+        error('Requested Python config settings_hash was not found: %s', char(desired_hash));
     end
 end
 
-function desired_burn = desired_burn_model_for_index_local(sys)
-    desired_burn = strtrim(string(getenv('RENDEZVOUS_BURN_MODEL')));
+function desired_burn = desired_burn_model_for_index_local(sys, run_cfg)
+    desired_burn = "";
+    if nargin >= 2
+        desired_burn = strtrim(get_run_string_field_local(run_cfg, {'maneuver','burn_model'}, ""));
+    end
+    if nargin >= 2 && get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true)
+        burn_env = strtrim(string(getenv('RENDEZVOUS_BURN_MODEL')));
+        if strlength(burn_env) > 0
+            desired_burn = burn_env;
+        end
+    end
     if strlength(desired_burn) == 0 && isfield(sys, 'maneuver') && isfield(sys.maneuver, 'default_burn_model')
         desired_burn = string(sys.maneuver.default_burn_model);
     end
@@ -818,8 +1182,11 @@ function model = normalize_burn_model_label_local(value)
     end
 end
 
-function [enabled, model] = desired_drag_for_index_local(sys)
-    drag_env = upper(strtrim(string(getenv('RENDEZVOUS_ATMOSPHERIC_DRAG'))));
+function [enabled, model] = desired_drag_for_index_local(sys, run_cfg)
+    drag_env = "";
+    if nargin >= 2 && get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true)
+        drag_env = upper(strtrim(string(getenv('RENDEZVOUS_ATMOSPHERIC_DRAG'))));
+    end
     if strlength(drag_env) > 0
         enabled = ~(drag_env == "OFF" || drag_env == "NONE" || drag_env == "0" || drag_env == "DISABLED");
         if enabled
@@ -888,6 +1255,12 @@ function sys = apply_json_to_sys_local(sys, cfg)
     sys.h_insert = get_json_number_local(cfg, {'scenario','h_chaser_km'}, sys.h_insert/1e3) * 1e3;
     sys.h_target = get_json_number_local(cfg, {'scenario','h_target_km'}, sys.h_target/1e3) * 1e3;
     sys.h_wait = get_json_number_local(cfg, {'scenario','h_wait_km'}, sys.h_wait/1e3) * 1e3;
+    sys.h_reentry = get_json_number_local(cfg, {'phase3','parking_altitude_km'}, sys.h_reentry/1e3) * 1e3;
+    sys.h_reentry = get_json_number_local(cfg, {'reentry','parking_altitude_km'}, sys.h_reentry/1e3) * 1e3;
+    sys.h_entry_interface = get_json_number_local(cfg, {'phase3','entry_interface_altitude_km'}, sys.h_entry_interface/1e3) * 1e3;
+    sys.h_entry_interface = get_json_number_local(cfg, {'reentry','entry_interface_altitude_km'}, sys.h_entry_interface/1e3) * 1e3;
+    sys.reentry_flight_path_angle = deg2rad(get_json_number_local(cfg, {'phase3','flight_path_angle_deg'}, rad2deg(sys.reentry_flight_path_angle)));
+    sys.reentry_flight_path_angle = deg2rad(get_json_number_local(cfg, {'reentry','flight_path_angle_deg'}, rad2deg(sys.reentry_flight_path_angle)));
 
     sys.Chaser_Mass_Init = get_json_number_local(cfg, {'maneuver','initial_mass_kg'}, sys.Chaser_Mass_Init);
 
@@ -925,7 +1298,14 @@ function sys = apply_json_to_sys_local(sys, cfg)
     end
 end
 
-function sys = apply_environment_env_overrides_local(sys)
+function sys = apply_environment_env_overrides_local(sys, run_cfg)
+    if nargin < 2
+        run_cfg = struct();
+    end
+    if ~get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true)
+        return;
+    end
+
     drag_model_env = strtrim(string(getenv('RENDEZVOUS_ATMOSPHERIC_DRAG')));
     if strlength(drag_model_env) > 0
         if upper(drag_model_env) == "OFF" || upper(drag_model_env) == "NONE" || upper(drag_model_env) == "0"
@@ -943,6 +1323,12 @@ function sys = apply_environment_env_overrides_local(sys)
 end
 
 function print_environment_config_local(sys)
+    fprintf('Scenario: insertion %.1f km, target %.1f km, wait %.1f km\n', ...
+            sys.h_insert/1000, sys.h_target/1000, sys.h_wait/1000);
+    fprintf('Maneuver model: %s, thrust %.1f N, Isp %.1f s\n', ...
+            char(string(sys.maneuver.default_burn_model)), sys.maneuver.finite_burn_thrust, sys.maneuver.finite_burn_isp);
+    fprintf('Phase 3 geometry: parking %.1f km, entry interface %.1f km, FPA %.2f deg\n', ...
+            sys.h_reentry/1000, sys.h_entry_interface/1000, rad2deg(sys.reentry_flight_path_angle));
     drag = sys.environment.atmospheric_drag;
     if drag.enabled
         fprintf('Environment: orbital atmospheric drag ON (%s), Cd/A chaser %.2f/%.2f m^2, target %.2f/%.2f m^2\n', ...
@@ -993,7 +1379,10 @@ function [phasing_mode, custom_params] = apply_json_to_phase1_local(phasing_mode
     custom_params.dt_capture = get_json_number_local(cfg, {'phase1','dt_capture_s'}, custom_params.dt_capture);
     custom_params.max_wait = get_json_number_local(cfg, {'phase1','max_wait_s'}, custom_params.max_wait);
     custom_params.max_capture_time = get_json_number_local(cfg, {'phase1','max_capture_time_s'}, custom_params.max_capture_time);
+    custom_params.phase_tol = get_json_number_local(cfg, {'phase1','phase_tol_rad'}, custom_params.phase_tol);
+    custom_params.event_time_tol = get_json_number_local(cfg, {'phase1','event_time_tol_s'}, custom_params.event_time_tol);
     custom_params.capture_pos_tol = get_json_number_local(cfg, {'phase1','capture_pos_tol_m'}, custom_params.capture_pos_tol);
+    custom_params.min_capture_time = get_json_number_local(cfg, {'phase1','min_capture_time_s'}, custom_params.min_capture_time);
 end
 
 function [r, v] = circular_polar_state_local(radius, u_rad, sys)
@@ -1221,8 +1610,8 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_hohma
     info.fpa_calc = fpa_calc;
     info.reentry_target_radius = target_reentry_r;
 
-    fprintf('   HOHMANN leg: injection toward 120 km / %.2f deg FPA...\n', ...
-            rad2deg(sys.reentry_flight_path_angle));
+    fprintf('   HOHMANN leg: injection toward %.1f km / %.2f deg FPA...\n', ...
+            sys.h_entry_interface/1000, rad2deg(sys.reentry_flight_path_angle));
     [X_chaser, dV_entry, fuel_entry] = apply_reentry_departure_impulse_local(X_chaser, target_reentry_r, sys, true);
     dV_used = dV_used + dV_entry;
     fuel_used = fuel_used + fuel_entry;
@@ -1238,12 +1627,12 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_hohma
     max_reentry_time = get_phase3_param_local(custom_params, 'max_reentry_coast_time', default_reentry_time);
 
     [X_chaser, X_target, hist_entry, coast_time] = ...
-        propagate_until_altitude_local(X_chaser, X_target, sys, 120e3, max_reentry_time, dt_reentry, hist.time_end);
+        propagate_until_altitude_local(X_chaser, X_target, sys, sys.h_entry_interface, max_reentry_time, dt_reentry, hist.time_end);
     hist = append_phase3_hist_local(hist, hist_entry);
     info.reentry_coast_time = coast_time;
 
-    fprintf('      120 km interface reached after %.2f min; deorbit fuel charged: %.4f kg.\n', ...
-            coast_time/60, fuel_entry);
+    fprintf('      %.1f km interface reached after %.2f min; deorbit fuel charged: %.4f kg.\n', ...
+            sys.h_entry_interface/1000, coast_time/60, fuel_entry);
 end
 
 function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_200_fpa_local(sys, X_chaser, X_target, custom_params)
@@ -1264,8 +1653,8 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_
     dV_used = dV_used + dV_drop;
     fuel_used = fuel_used + fuel_drop;
 
-    fprintf('      200 km parking orbit reached: altitude %.2f km, dV %.4f m/s, fuel %.4f kg\n', ...
-            (norm(X_chaser(1:3)) - sys.Re)/1000, dV_drop, fuel_drop);
+    fprintf('      %.1f km parking orbit reached: altitude %.2f km, dV %.4f m/s, fuel %.4f kg\n', ...
+            sys.h_reentry/1000, (norm(X_chaser(1:3)) - sys.Re)/1000, dV_drop, fuel_drop);
 
     n_chaser = orbit_rate_from_state_local(X_chaser);
     n_target = orbit_rate_from_state_local(X_target);
@@ -1296,8 +1685,8 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_
     info.reentry_target_radius = target_reentry_r;
     charge_final_fuel = get_phase3_bool_param_local(custom_params, 'charge_final_reentry_fuel', false);
 
-    fprintf('   R_BAR_200_FPA leg 3: injection toward 120 km / %.2f deg FPA (fuel update: %s)...\n', ...
-            rad2deg(sys.reentry_flight_path_angle), bool_label_local(charge_final_fuel));
+    fprintf('   R_BAR_200_FPA leg 3: injection toward %.1f km / %.2f deg FPA (fuel update: %s)...\n', ...
+            sys.h_entry_interface/1000, rad2deg(sys.reentry_flight_path_angle), bool_label_local(charge_final_fuel));
     [X_chaser, dV_entry, fuel_entry] = apply_reentry_departure_impulse_local(X_chaser, target_reentry_r, sys, charge_final_fuel);
     dV_used = dV_used + dV_entry;
     if charge_final_fuel
@@ -1317,22 +1706,22 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_
     max_reentry_time = get_phase3_param_local(custom_params, 'max_reentry_coast_time', default_reentry_time);
 
     [X_chaser, X_target, hist_entry, coast_time] = ...
-        propagate_until_altitude_local(X_chaser, X_target, sys, 120e3, max_reentry_time, dt_reentry, hist.time_end);
+        propagate_until_altitude_local(X_chaser, X_target, sys, sys.h_entry_interface, max_reentry_time, dt_reentry, hist.time_end);
 
     hist = append_phase3_hist_local(hist, hist_entry);
     info.reentry_coast_time = coast_time;
 
     if charge_final_fuel
-        fprintf('      120 km interface reached after %.2f min; final-injection fuel charged: %.4f kg.\n', ...
-                coast_time/60, fuel_entry);
+        fprintf('      %.1f km interface reached after %.2f min; final-injection fuel charged: %.4f kg.\n', ...
+                sys.h_entry_interface/1000, coast_time/60, fuel_entry);
     else
-        fprintf('      120 km interface reached after %.2f min; fuel-equivalent %.4f kg was not charged.\n', ...
-                coast_time/60, fuel_entry);
+        fprintf('      %.1f km interface reached after %.2f min; fuel-equivalent %.4f kg was not charged.\n', ...
+                sys.h_entry_interface/1000, coast_time/60, fuel_entry);
     end
 end
 
 function [target_r, details] = compute_reentry_target_radius_local(start_r, sys)
-    interface_r = sys.Re + 120e3;
+    interface_r = sys.Re + sys.h_entry_interface;
     gamma = sys.reentry_flight_path_angle;
     phi = 2 * atan(start_r / (start_r - interface_r) * tan(gamma));
     denom = sin(phi) * cos(gamma) - cos(phi) * sin(gamma);

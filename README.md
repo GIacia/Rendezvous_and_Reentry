@@ -21,7 +21,7 @@ This repository currently models:
 - Multi-Hohmann phasing option for splitting large maneuvers across multiple thermally limited burns
 - Custom phased maneuver logic driven by externally tuned phase angle, delta-V, and gamma parameters, with selectable impulsive or finite-burn execution
 - LVLH waypoint-impulse proximity operations with cleanup, hold trims, cycloidal drift, R-bar hops, braking impulses, and mass depletion
-- selectable Phase 3 re-entry logic through `reentry_mode`
+- selectable Phase 3 re-entry logic through `Mission_Run_Config.m`
 - Simple thrust uncertainty / noise injection in selected phasing modes
 - Mission-level delta-V and propellant budget tracking
 - Visualization of trajectory, altitude history, proximity trajectory, mass depletion, atmospheric-entry heat flux, dynamic pressure, g-load, and line-of-sight margin
@@ -32,6 +32,7 @@ This repository currently models:
 .
 |-- Main_Mission_Simulator.m      % Main entry point for the full mission
 |-- Mission_Config.m              % Physical constants, vehicle data, mission parameters
+|-- Mission_Run_Config.m          % User-facing run control panel
 |-- Phasing_Propagator.m          % 3-DOF phasing, Hohmann, Multi-Hohmann, custom impulse logic
 |-- Env_EOM.m                     % Environment and 3-DOF/6-DOF equations of motion
 |-- Atmospheric_Drag_Acceleration.m % Shared MATLAB atmospheric-drag model
@@ -57,11 +58,42 @@ The active MATLAB `.m` files are intentionally kept at the repository root so th
 
 1. Open the repository folder in MATLAB.
 2. Make sure the current folder is the repository root.
-3. Run:
+3. Edit `Mission_Run_Config.m` if you want to change the scenario, burn model,
+   re-entry mode, parking altitude, entry vehicle, or solver tolerances.
+4. Run:
 
 ```matlab
 Main_Mission_Simulator
 ```
+
+`Mission_Run_Config.m` is the recommended control surface for normal use. It
+keeps the commonly adjusted settings in one place:
+
+- Python optimizer JSON selection: `AUTO`, `NONE`, `FILE`, `CASE_ID`, or `HASH`
+- scenario altitudes and initial phase geometry
+- maneuver model: `IMPULSIVE` or `FINITE_BURN`
+- Phase 1 phasing parameters and capture tolerances
+- Phase 2 proximity-operation waypoints and timing
+- Phase 3 mode, parking altitude, entry-interface altitude, and FPA
+- Phase 4 re-entry vehicle shape and atmosphere-entry settings
+- optional orbital atmospheric drag
+
+Common examples:
+
+```matlab
+% In Mission_Run_Config.m
+run.maneuver.burn_model = "FINITE_BURN";
+run.phase3.mode = "R_BAR_200_FPA";
+run.phase3.parking_altitude_km = 200;
+run.phase3.flight_path_angle_deg = 4;
+run.reentry.shape = "TPS_MIN";
+run.environment.atmospheric_drag.enabled = true;
+```
+
+Leave Phase 1 optimizer outputs such as `run.phase1.phase_angle_deg`,
+`run.phase1.delta_v_m_s`, and `run.phase1.gamma_deg` as `[]` when you want
+MATLAB to use the selected Python optimizer JSON values. Fill them in only when
+you want to manually override the optimizer solution.
 
 Python shooting results can be exported directly into a MATLAB-readable mission config:
 
@@ -81,61 +113,79 @@ Atmospheric drag is off by default. To optimize with the ISA76 drag option and e
 python J2PolarHohmannShooting.py --no-plot --atmospheric-drag isa76 --matlab-config-out configs/latest_python_solution.json
 ```
 
-Then load that exact latest config in MATLAB:
+Then load that exact latest config by setting the run control file:
 
 ```matlab
-setenv('RENDEZVOUS_CONFIG_JSON','configs/latest_python_solution.json')
+% In Mission_Run_Config.m
+run.python_config.mode = "FILE";
+run.python_config.file = "configs/latest_python_solution.json";
 Main_Mission_Simulator
 ```
 
-Or let MATLAB select a matching archived Python result automatically. Clear the explicit config path, set the desired burn model, and run:
+Or let MATLAB select a matching archived Python result automatically:
 
 ```matlab
-setenv('RENDEZVOUS_CONFIG_JSON','')
-setenv('RENDEZVOUS_BURN_MODEL','IMPULSIVE')
+% In Mission_Run_Config.m
+run.python_config.mode = "AUTO";
+run.maneuver.burn_model = "IMPULSIVE";
 Main_Mission_Simulator
 ```
 
 The automatic selector reads `configs/python_solution_index.json` and chooses the newest case matching the current burn model, scenario altitude pair, and atmospheric-drag setting. You can also pin an exact archived run:
 
 ```matlab
-setenv('RENDEZVOUS_CONFIG_CASE_ID','impulsive_drag-off_h300.0-500.0_phase90.0_31c1e45c_410e0069_20260630_134559Z')
+% In Mission_Run_Config.m
+run.python_config.mode = "CASE_ID";
+run.python_config.case_id = "impulsive_drag-off_h300.0-500.0_phase90.0_31c1e45c_410e0069_20260630_134559Z";
 Main_Mission_Simulator
 ```
 
-The JSON file overrides only the fields it contains, so `Mission_Config.m` remains the default source of truth.
+The JSON file overrides only the fields it contains. `Mission_Run_Config.m` is
+then applied again as the final user-facing override, while `Mission_Config.m`
+remains the source for physical constants and vehicle shape tables.
 
-For a quick MATLAB-only drag run without editing files:
+For a MATLAB-only run that ignores Python optimizer JSON:
 
 ```matlab
-setenv('RENDEZVOUS_ATMOSPHERIC_DRAG','ISA76')
+% In Mission_Run_Config.m
+run.python_config.mode = "NONE";
 Main_Mission_Simulator
 ```
 
-Clear it with `setenv('RENDEZVOUS_ATMOSPHERIC_DRAG','OFF')` or by clearing the environment variable.
-
-The atmospheric entry vehicle shape is selected independently. Available values are `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, and `TPS_MIN`:
+The atmospheric entry vehicle shape is selected independently. Available values
+are `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, and `TPS_MIN`:
 
 ```matlab
-setenv('RENDEZVOUS_REENTRY_SHAPE','TPS_MIN')
+% In Mission_Run_Config.m
+run.reentry.shape = "TPS_MIN";
 Main_Mission_Simulator
 ```
 
 The active MATLAB path is intended to use standard MATLAB numerical functionality. The Python helper scripts require the packages listed in `requirements.txt`.
 
-Phase 3 is selected by `reentry_mode` in `Main_Mission_Simulator.m`. You can override it without editing the file:
+Phase 3 is selected in `Mission_Run_Config.m`:
 
 ```matlab
-setenv('RENDEZVOUS_PHASE3_MODE','R_BAR_200_FPA')
+run.phase3.mode = "R_BAR_200_FPA";
 Main_Mission_Simulator
 ```
 
-For `R_BAR_200_FPA`, the final 200 km to 120 km injection fuel update is controlled independently. The default in the script is `off`; to include that burn in the propellant and remaining-mass budget, run:
+For `R_BAR_200_FPA`, the final parking-orbit to entry-interface injection fuel
+update is controlled independently. The default is `false`; to include that burn
+in the propellant and remaining-mass budget:
 
 ```matlab
-setenv('RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL','on')
+run.phase3.charge_final_reentry_fuel = true;
 Main_Mission_Simulator
 ```
+
+Legacy environment-variable overrides are still supported for batch scripts:
+`RENDEZVOUS_CONFIG_JSON`, `RENDEZVOUS_CONFIG_CASE_ID`,
+`RENDEZVOUS_CONFIG_HASH`, `RENDEZVOUS_BURN_MODEL`,
+`RENDEZVOUS_ATMOSPHERIC_DRAG`, `RENDEZVOUS_REENTRY_SHAPE`,
+`RENDEZVOUS_PHASE3_MODE`, and `RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL`. Set
+`run.runtime.allow_environment_overrides = false` to make `Mission_Run_Config.m`
+the only run-control source.
 
 ## Simulation Flow
 
@@ -143,14 +193,13 @@ Main_Mission_Simulator
 
 `Phasing_Propagator.m` performs the pre-rendezvous orbital transfer.
 
-The active root script currently uses `CUSTOM_IMPULSE` mode, where the departure phase angle, burn magnitude, and burn flight-path tilt are supplied through `custom_params`. The maneuver execution model is selected separately with `custom_params.burn_model`: `"IMPULSIVE"` preserves the legacy instantaneous delta-V behavior, while `"FINITE_BURN"` applies the same delta-V direction over a short high-thrust burn using the configured thrust, Isp, and mass depletion. Those values can be generated or refined using the Python shooting helpers.
-
-To switch the MATLAB custom maneuver to finite-burn mode without editing the script:
-
-```matlab
-setenv('RENDEZVOUS_BURN_MODEL','FINITE_BURN')
-Main_Mission_Simulator
-```
+The active root script currently uses `CUSTOM_IMPULSE` mode by default, where
+the departure phase angle, burn magnitude, and burn flight-path tilt are supplied
+through the selected Python optimizer JSON or through `Mission_Run_Config.m`.
+The maneuver execution model is selected with `run.maneuver.burn_model`:
+`"IMPULSIVE"` preserves the legacy instantaneous delta-V behavior, while
+`"FINITE_BURN"` applies the same delta-V direction over a short high-thrust burn
+using the configured thrust, Isp, and mass depletion.
 
 In `HOHMANN` mode, the logic is:
 
@@ -179,12 +228,12 @@ Older force-based `GNC_Controller.m` implementations are preserved under `legacy
 
 ### Phase 3: Re-entry / Descent
 
-Phase 3 is selected with `reentry_mode` in `Main_Mission_Simulator.m`.
+Phase 3 is selected with `run.phase3.mode` in `Mission_Run_Config.m`.
 
 Current modes:
 
 - `HOHMANN`: performs a direct FPA-targeted de-orbit injection and stops at the 120 km entry interface. It no longer performs a nonphysical circularization after crossing the interface.
-- `R_BAR_200_FPA`: first lowers from the station orbit region to a 200 km parking orbit, waits until the vehicle is below the target on the target R-bar, then performs a final 200 km to 120 km injection using the same FPA geometry. The final injection delta-V is always reported; its propellant can be included or excluded with `charge_final_reentry_fuel` or `RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL`.
+- `R_BAR_200_FPA`: first lowers from the station orbit region to `run.phase3.parking_altitude_km`, waits until the vehicle is below the target on the target R-bar, then performs a final injection to `run.phase3.entry_interface_altitude_km` using the configured FPA geometry. The final injection delta-V is always reported; its propellant can be included or excluded with `run.phase3.charge_final_reentry_fuel`.
 
 Both modes still use the same post-run check of the actual flight-path angle near 120 km altitude.
 
