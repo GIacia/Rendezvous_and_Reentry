@@ -4,8 +4,8 @@ MATLAB-based end-to-end rendezvous mission simulator for an unmanned chaser spac
 
 - **Phase 1**: 3-DOF phasing / homing with impulsive maneuvers and J2-aware orbital propagation
 - **Phase 2**: LVLH waypoint-impulse proximity operations with cycloidal drift, R-bar hops, nonlinear J2 propagation, and mass bookkeeping
-- **Phase 3**: selectable 3-DOF de-orbit / re-entry modes, including direct FPA-targeted descent and a 200 km R-bar-aligned re-entry setup
-- **Phase 4**: atmospheric entry from the 120 km interface, with re-entry vehicle shape selection, heat-rate diagnostics, and chaser-to-entry-vehicle line-of-sight checks
+- **Phase 3**: selectable 3-DOF de-orbit / re-entry modes, including direct FPA-targeted descent and a configurable parking-orbit / R-bar-aligned re-entry setup
+- **Phase 4**: atmospheric entry from a configurable entry interface, with re-entry vehicle shape selection, heat-rate diagnostics, and chaser-to-entry-vehicle line-of-sight checks
 
 The project is designed as a mission-level simulation framework rather than a single guidance-law demo. It is useful for studying how orbit transfer logic, target-relative geometry, J2 perturbation, mass depletion, proximity-operation sequencing, and entry diagnostics interact in one connected workflow.
 
@@ -37,9 +37,10 @@ This repository currently models:
 |-- Env_EOM.m                     % Environment and 3-DOF/6-DOF equations of motion
 |-- Atmospheric_Drag_Acceleration.m % Shared MATLAB atmospheric-drag model
 |-- Standard_Atmosphere_Density.m % Shared ISA76-style atmosphere helper
-|-- Reentry_Propagator.m          % 120 km atmospheric-entry propagation and LOS diagnostics
+|-- Reentry_Propagator.m          % Atmospheric-entry propagation and LOS diagnostics
 |-- J2PolarHohmann.py             % Python J2 polar Hohmann propagation study
 |-- J2PolarHohmannShooting.py     % Python shooting / constrained optimization helper
+|-- DragDeorbitDesigner.py        % Python drag-aware Phase 3 deorbit design helper
 |-- docs/
 |   |-- ARCHITECTURE.md
 |   `-- ASSUMPTIONS_AND_LIMITATIONS.md
@@ -88,7 +89,14 @@ run.phase3.parking_altitude_km = 200;
 run.phase3.flight_path_angle_deg = 4;
 run.reentry.shape = "TPS_MIN";
 run.environment.atmospheric_drag.enabled = true;
+run.environment.atmospheric_drag.apply_from_phase = "PHASE3";
 ```
+
+The entry attitude inputs are intentionally simple in the current model:
+`run.reentry.aoa_deg = []` uses the selected shape's default AoA, and
+`run.reentry.bank_angle_deg` is held constant during atmospheric entry. The
+simulator does not yet propagate vehicle attitude, trim, or closed-loop bank
+guidance for the separated re-entry vehicle.
 
 Leave Phase 1 optimizer outputs such as `run.phase1.phase_angle_deg`,
 `run.phase1.delta_v_m_s`, and `run.phase1.gamma_deg` as `[]` when you want
@@ -113,6 +121,47 @@ Atmospheric drag is off by default. To optimize with the ISA76 drag option and e
 python J2PolarHohmannShooting.py --no-plot --atmospheric-drag isa76 --matlab-config-out configs/latest_python_solution.json
 ```
 
+The default run-control scope is
+`run.environment.atmospheric_drag.apply_from_phase = "PHASE3"`. With that
+temporary setting, Phase 1/2 remain gravity + J2 only so the existing drag-off
+Phase 1 optimizer archives stay usable, and orbital drag is enabled after
+berthing for Phase 3 and the orbiting relay chaser during Phase 4. Set
+`apply_from_phase = "PHASE1"` only when you also have a matching drag-on Phase 1
+optimizer JSON. The separated re-entry vehicle always uses the atmospheric
+entry model in `Reentry_Propagator.m`; this orbital-drag switch does not disable
+Phase 4 entry drag/lift.
+
+When orbital drag is enabled and Phase 3 is `HOHMANN`, MATLAB uses a separate
+Python-generated drag-aware deorbit design instead of the legacy dragless conic
+FPA injection. Generate or refresh that design with:
+
+```bash
+python DragDeorbitDesigner.py --start-altitude-km 500 --entry-interface-altitude-km 120 --flight-path-angle-deg 4 --matlab-config-out configs/latest_drag_deorbit_solution.json
+```
+
+The generated file is loaded through:
+
+```matlab
+% In Mission_Run_Config.m
+run.phase3.drag_deorbit_design.mode = "AUTO";
+run.phase3.drag_deorbit_design.file = "configs/latest_drag_deorbit_solution.json";
+```
+
+By default this design helper writes a finite-duration, velocity-retrograde
+deorbit burn (`--burn-model finite_burn`, `--finite-burn-thrust-n 3000`)
+followed by J2 + atmospheric-drag propagation to the configured entry
+interface. `--burn-model impulsive` preserves the older instantaneous velocity
+decrement. `--burn-model continuous` is accepted as an alias for this finite
+burn model; it is not a full low-thrust trajectory optimizer.
+
+The common "about 100 m/s from LEO" rule of thumb is valid for lower start
+altitudes and shallower entry-interface angles, but it is not universal. For
+the repository's current 500 km / 120 km / 4 deg default, the generated design
+is about 276 m/s; the same JSON records whether a 100 m/s check reaches the
+interface. If you force a low thrust such as `--finite-burn-thrust-n 300`, the
+burn can last long enough that the vehicle reaches the interface before the
+commanded burn completes, and the 4 deg FPA constraint may no longer be met.
+
 Then load that exact latest config by setting the run control file:
 
 ```matlab
@@ -131,7 +180,11 @@ run.maneuver.burn_model = "IMPULSIVE";
 Main_Mission_Simulator
 ```
 
-The automatic selector reads `configs/python_solution_index.json` and chooses the newest case matching the current burn model, scenario altitude pair, and atmospheric-drag setting. You can also pin an exact archived run:
+The automatic selector reads `configs/python_solution_index.json` and chooses
+the best archived case for the current burn model, scenario altitude pair, and
+atmospheric-drag setting. The burn model is treated as a hard filter; scenario
+and drag settings are scored, so use `FILE`, `CASE_ID`, or `HASH` when exact
+reproduction matters. You can also pin an exact archived run:
 
 ```matlab
 % In Mission_Run_Config.m
@@ -152,23 +205,7 @@ run.python_config.mode = "NONE";
 Main_Mission_Simulator
 ```
 
-The atmospheric entry vehicle shape is selected independently. Available values
-are `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, and `TPS_MIN`:
-
-```matlab
-% In Mission_Run_Config.m
-run.reentry.shape = "TPS_MIN";
-Main_Mission_Simulator
-```
-
 The active MATLAB path is intended to use standard MATLAB numerical functionality. The Python helper scripts require the packages listed in `requirements.txt`.
-
-Phase 3 is selected in `Mission_Run_Config.m`:
-
-```matlab
-run.phase3.mode = "R_BAR_200_FPA";
-Main_Mission_Simulator
-```
 
 For `R_BAR_200_FPA`, the final parking-orbit to entry-interface injection fuel
 update is controlled independently. The default is `false`; to include that burn
@@ -232,14 +269,32 @@ Phase 3 is selected with `run.phase3.mode` in `Mission_Run_Config.m`.
 
 Current modes:
 
-- `HOHMANN`: performs a direct FPA-targeted de-orbit injection and stops at the 120 km entry interface. It no longer performs a nonphysical circularization after crossing the interface.
+- `HOHMANN`: performs a direct FPA-targeted de-orbit injection and stops at `run.phase3.entry_interface_altitude_km`. It no longer performs a nonphysical circularization after crossing the interface.
 - `R_BAR_200_FPA`: first lowers from the station orbit region to `run.phase3.parking_altitude_km`, waits until the vehicle is below the target on the target R-bar, then performs a final injection to `run.phase3.entry_interface_altitude_km` using the configured FPA geometry. The final injection delta-V is always reported; its propellant can be included or excluded with `run.phase3.charge_final_reentry_fuel`.
 
-Both modes still use the same post-run check of the actual flight-path angle near 120 km altitude.
+Both modes still use the same post-run check of the actual flight-path angle near the configured entry-interface altitude.
+
+If orbital atmospheric drag is enabled for Phase 3, `HOHMANN` switches to the
+drag-aware single-retrograde-burn design loaded from
+`run.phase3.drag_deorbit_design.file`. Set
+`run.phase3.drag_deorbit_design.mode = "OFF"` to force the older dragless conic
+calculation even with orbital drag enabled.
+
+For finite-burn deorbit JSONs, MATLAB recomputes burn duration and propellant
+from the actual Phase 3 mass after rendezvous/proximity operations. The Python
+design mass is still recorded in the JSON for traceability.
 
 ### Phase 4: Atmospheric Entry
 
-After Phase 3 reaches the 120 km interface, `Reentry_Propagator.m` propagates a separated re-entry vehicle through a co-rotating ISA76 atmosphere. The translational state remains ECI, but drag and lift use atmosphere-relative velocity, which is equivalent to an ECEF-relative aerodynamic velocity model.
+After Phase 3 reaches the configured entry interface, `Reentry_Propagator.m` propagates a separated re-entry vehicle through a co-rotating ISA76 atmosphere. The translational state remains ECI, but drag and lift use atmosphere-relative velocity, which is equivalent to an ECEF-relative aerodynamic velocity model.
+
+AoA and bank angle are selected once at the start of atmospheric entry. If
+`run.reentry.aoa_deg` is empty, the selected shape's `default_aoa_deg` is used;
+otherwise the user value is used. `run.reentry.bank_angle_deg` rotates the lift
+direction about the atmosphere-relative velocity vector and is also held
+constant. The flight-path angle is not commanded during Phase 4; it is computed
+from the propagated position and velocity state and evolves naturally under
+gravity, drag, and lift.
 
 The pre-Phase-3 chaser state is propagated separately as an orbiting relay. The code checks whether the re-entry vehicle and relay chaser maintain geometric line of sight by testing Earth-limb clearance along the connecting segment. It also plots heat flux, total heat load, dynamic pressure, aero g-load, and LOS clearance/elevation.
 
@@ -294,7 +349,9 @@ Important assumptions include:
 
 - Earth gravity + J2, with optional atmospheric drag
 - no SRP, third-body gravity, or full Earth-fixed frame dynamics beyond the simple co-rotating atmosphere used by the drag and entry models
-- re-entry vehicle Cd is currently an assumed constant; only L/D trends and geometry are taken from the supplied shape PPT
+- drag-aware `HOHMANN` deorbit design is a single retrograde burn followed by numerical drag propagation, not a full entry-guidance, landing-target, or high-dimensional trajectory optimizer
+- re-entry vehicle Cd is currently an assumed constant; only L/D trends and geometry are taken from externally provided shape data
+- re-entry AoA and bank angle are fixed during Phase 4; no attitude propagation, trim solve, or bank guidance law is included yet
 - simplified impulsive burns in the phasing and proximity stages
 - simplified thrust and sensor error models
 - simplified capture / berthing logic

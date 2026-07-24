@@ -30,9 +30,7 @@ function sys = Mission_Config()
     sys.Thrust_Impulsive = 300;% High-thrust finite-burn engine [N]
 
     % Maneuver execution options.
-    % default_burn_model: "IMPULSIVE" preserves the legacy instantaneous
-    % delta-V behavior. Use "FINITE_BURN" to spread the same delta-V vector
-    % over a short, high-thrust burn.
+    % default_burn_model: "IMPULSIVE" preserves the legacy instantaneous delta-V behavior. Use "FINITE_BURN" to spread the same delta-V vector over a short, high-thrust burn.
     sys.maneuver.default_burn_model = "FINITE_BURN";
     sys.maneuver.direction_mode = "LOCAL_TANGENTIAL_RADIAL";
     sys.maneuver.finite_burn_thrust = sys.Thrust_Impulsive; % [N]
@@ -42,8 +40,7 @@ function sys = Mission_Config()
     sys.maneuver.max_single_burn_delta_v = inf;             % [m/s]
 
     % Environment model options.
-    % atmospheric_drag.enabled = false preserves the previous J2-only
-    % propagation. Set enabled = true and model = "ISA76" to add drag.
+    % atmospheric_drag.enabled = false preserves the previous J2-only propagation. Set enabled = true and model = "ISA76" to add drag.
     sys.environment.atmospheric_drag.enabled = false;
     sys.environment.atmospheric_drag.model = "ISA76";
     sys.environment.atmospheric_drag.use_matlab_atmosisa = true;
@@ -55,8 +52,8 @@ function sys = Mission_Config()
     sys.environment.atmospheric_drag.target_area_m2 = 4.0;
 
     % Atmospheric re-entry vehicle options.
-    % Shape dimensions come from the supplied re-entry vehicle PPT file.
-    % L/D lookup values are approximate digitizations from the slide images.
+    % Shape dimensions come from external re-entry vehicle data.
+    % L/D values are approximate values from external data.
     sys.reentry_vehicle.selected_shape = "COMPROMISE";
     sys.reentry_vehicle.dt = 0.5;                    % [s]
     sys.reentry_vehicle.max_time = 2500;             % [s]

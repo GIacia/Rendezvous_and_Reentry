@@ -13,7 +13,10 @@ sys = apply_json_to_sys_local(sys, mission_cfg);
 sys = apply_run_config_to_sys_local(sys, run_cfg);
 sys = apply_environment_env_overrides_local(sys, run_cfg);
 sys = refresh_derived_sys_local(sys);
+sys_post_berthing = sys;
 print_environment_config_local(sys);
+sys = apply_pre_berthing_drag_scope_local(sys_post_berthing, run_cfg);
+warn_if_mission_json_environment_mismatch_local(mission_cfg, sys);
 
 % Budget Tracking Table
 Budget = table('Size',[0 4], 'VariableTypes',{'string','double','double','double'}, ...
@@ -378,6 +381,10 @@ Budget = [Budget; {"Phase 2: Cycloid + R-bar", dV_p2, fuel_p2, m_current}];
 
 %% 4. Phase 3: Re-entry
 fprintf('\n[Phase 3] 3-DOF re-entry simulation start...\n');
+sys = sys_post_berthing;
+if drag_starts_after_berthing_local(run_cfg) && orbital_drag_enabled_local(sys)
+    fprintf('   orbital atmospheric drag enabled after berthing for Phase 3 onward.\n');
+end
 
 phase3_cfg = default_phase3_config_local();
 phase3_cfg = apply_json_to_phase3_local(phase3_cfg, mission_cfg);
@@ -435,6 +442,9 @@ Budget = [Budget; {"Phase 4: Atmospheric Entry", 0, 0, X_reentry_vehicle(14)}];
 fprintf('   shape: %s\n', char(reentry_atmo_info.shape_name));
 fprintf('   entry duration: %.2f s, final altitude: %.2f km\n', ...
         reentry_atmo_info.duration_s, reentry_atmo_info.final_altitude_m/1000);
+fprintf('   AoA %.2f deg, bank %.2f deg, FPA %.3f -> %.3f deg\n', ...
+        reentry_atmo_info.aoa_deg, reentry_atmo_info.bank_angle_deg, ...
+        reentry_atmo_info.initial_fpa_deg, reentry_atmo_info.final_fpa_deg);
 fprintf('   max heat flux: %.3f W/cm^2, total heat load: %.3f MJ/m^2\n', ...
         reentry_atmo_info.max_heat_flux_W_m2/1e4, reentry_atmo_info.total_heat_load_J_m2/1e6);
 fprintf('   max dynamic pressure: %.3f kPa, max aero g-load: %.3f g\n', ...
@@ -839,6 +849,10 @@ function phase3_cfg = default_phase3_config_local()
     phase3_cfg.max_rbar_wait_s = [];
     phase3_cfg.rbar_vbar_tol_m = 10;
     phase3_cfg.rbar_radial_tol_m = 50e3;
+    phase3_cfg.drag_deorbit_design_mode = "AUTO";
+    phase3_cfg.drag_deorbit_design_file = "configs/latest_drag_deorbit_solution.json";
+    phase3_cfg.drag_deorbit_delta_v_m_s = [];
+    phase3_cfg.drag_deorbit_max_coast_time_s = [];
 end
 
 function phase3_cfg = apply_json_to_phase3_local(phase3_cfg, cfg)
@@ -856,6 +870,8 @@ function phase3_cfg = apply_json_to_phase3_local(phase3_cfg, cfg)
     phase3_cfg.max_rbar_wait_s = get_json_number_local(cfg, {'phase3','max_rbar_wait_s'}, phase3_cfg.max_rbar_wait_s);
     phase3_cfg.rbar_vbar_tol_m = get_json_number_local(cfg, {'phase3','rbar_vbar_tol_m'}, phase3_cfg.rbar_vbar_tol_m);
     phase3_cfg.rbar_radial_tol_m = get_json_number_local(cfg, {'phase3','rbar_radial_tol_m'}, phase3_cfg.rbar_radial_tol_m);
+    phase3_cfg.drag_deorbit_delta_v_m_s = get_json_number_local(cfg, {'phase3','drag_deorbit','delta_v_m_s'}, phase3_cfg.drag_deorbit_delta_v_m_s);
+    phase3_cfg.drag_deorbit_max_coast_time_s = get_json_number_local(cfg, {'phase3','drag_deorbit','max_coast_time_s'}, phase3_cfg.drag_deorbit_max_coast_time_s);
 end
 
 function phase3_cfg = apply_run_config_to_phase3_local(phase3_cfg, run_cfg)
@@ -868,6 +884,10 @@ function phase3_cfg = apply_run_config_to_phase3_local(phase3_cfg, run_cfg)
     phase3_cfg.max_rbar_wait_s = get_run_number_field_local(run_cfg, {'phase3','max_rbar_wait_s'}, phase3_cfg.max_rbar_wait_s);
     phase3_cfg.rbar_vbar_tol_m = get_run_number_field_local(run_cfg, {'phase3','rbar_vbar_tol_m'}, phase3_cfg.rbar_vbar_tol_m);
     phase3_cfg.rbar_radial_tol_m = get_run_number_field_local(run_cfg, {'phase3','rbar_radial_tol_m'}, phase3_cfg.rbar_radial_tol_m);
+    phase3_cfg.drag_deorbit_design_mode = get_run_string_field_local(run_cfg, {'phase3','drag_deorbit_design','mode'}, phase3_cfg.drag_deorbit_design_mode);
+    phase3_cfg.drag_deorbit_design_file = get_run_string_field_local(run_cfg, {'phase3','drag_deorbit_design','file'}, phase3_cfg.drag_deorbit_design_file);
+    phase3_cfg.drag_deorbit_delta_v_m_s = get_run_number_field_local(run_cfg, {'phase3','drag_deorbit_design','delta_v_m_s'}, phase3_cfg.drag_deorbit_delta_v_m_s);
+    phase3_cfg.drag_deorbit_max_coast_time_s = get_run_number_field_local(run_cfg, {'phase3','drag_deorbit_design','max_coast_time_s'}, phase3_cfg.drag_deorbit_max_coast_time_s);
 end
 
 function phase3_cfg = apply_phase3_env_overrides_local(phase3_cfg, run_cfg)
@@ -893,6 +913,10 @@ function custom_params = apply_phase3_config_to_params_local(custom_params, phas
     custom_params.dt_rbar_wait = phase3_cfg.dt_rbar_wait_s;
     custom_params.rbar_vbar_tol = phase3_cfg.rbar_vbar_tol_m;
     custom_params.rbar_radial_tol = phase3_cfg.rbar_radial_tol_m;
+    custom_params.drag_deorbit_design_mode = phase3_cfg.drag_deorbit_design_mode;
+    custom_params.drag_deorbit_design_file = phase3_cfg.drag_deorbit_design_file;
+    custom_params.drag_deorbit_delta_v_m_s = phase3_cfg.drag_deorbit_delta_v_m_s;
+    custom_params.drag_deorbit_max_coast_time_s = phase3_cfg.drag_deorbit_max_coast_time_s;
     if ~isempty(phase3_cfg.max_reentry_coast_time_s)
         custom_params.max_reentry_coast_time = phase3_cfg.max_reentry_coast_time_s;
     end
@@ -1183,6 +1207,12 @@ function model = normalize_burn_model_label_local(value)
 end
 
 function [enabled, model] = desired_drag_for_index_local(sys, run_cfg)
+    if nargin >= 2 && drag_starts_after_berthing_local(run_cfg)
+        enabled = false;
+        model = "ISA76";
+        return;
+    end
+
     drag_env = "";
     if nargin >= 2 && get_run_bool_field_local(run_cfg, {'runtime','allow_environment_overrides'}, true)
         drag_env = upper(strtrim(string(getenv('RENDEZVOUS_ATMOSPHERIC_DRAG'))));
@@ -1339,6 +1369,37 @@ function print_environment_config_local(sys)
     fprintf('Re-entry vehicle: shape %s, terminal altitude %.1f km, lift model %s, entry atmosphere ISA76\n', ...
             char(string(sys.reentry_vehicle.selected_shape)), sys.reentry_vehicle.terminal_altitude/1000, ...
             char(bool_label_local(sys.reentry_vehicle.lift_enabled)));
+end
+
+function sys = apply_pre_berthing_drag_scope_local(sys, run_cfg)
+    if drag_starts_after_berthing_local(run_cfg) && orbital_drag_enabled_local(sys)
+        sys.environment.atmospheric_drag.enabled = false;
+        fprintf('Environment scope: orbital atmospheric drag held OFF through Phase 1/2; enabled after berthing.\n');
+    end
+end
+
+function tf = drag_starts_after_berthing_local(run_cfg)
+    scope = upper(get_run_string_field_local(run_cfg, {'environment','atmospheric_drag','apply_from_phase'}, "PHASE1"));
+    tf = scope == "PHASE3" || scope == "POST_BERTHING" || scope == "AFTER_BERTHING";
+end
+
+function warn_if_mission_json_environment_mismatch_local(cfg, sys)
+    if isempty(fieldnames(cfg)) || ~has_json_path_local(cfg, {'environment','atmospheric_drag'})
+        return;
+    end
+
+    json_drag_enabled = get_json_bool_local(cfg, {'environment','atmospheric_drag','enabled'}, false);
+    json_drag_model = upper(get_json_string_local(cfg, {'environment','atmospheric_drag','model'}, "ISA76"));
+    sys_drag = sys.environment.atmospheric_drag;
+    sys_drag_enabled = parse_bool_setting_local(sys_drag.enabled);
+    sys_drag_model = upper(string(sys_drag.model));
+
+    if json_drag_enabled ~= sys_drag_enabled || json_drag_model ~= sys_drag_model
+        fprintf(['WARNING: selected mission JSON atmospheric-drag setting (%s/%s) does not match ' ...
+                 'current MATLAB setting (%s/%s). Regenerate or pin a matching Python Phase 1 JSON for consistent drag-on runs.\n'], ...
+                bool_label_local(json_drag_enabled), char(json_drag_model), ...
+                bool_label_local(sys_drag_enabled), char(sys_drag_model));
+    end
 end
 
 function [phasing_mode, custom_params] = apply_json_to_phase1_local(phasing_mode, custom_params, cfg)
@@ -1606,6 +1667,57 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_hohma
     hist = init_phase3_hist_local();
     info = struct();
 
+    if should_use_drag_deorbit_design_local(sys, custom_params)
+        design = load_drag_deorbit_design_local(custom_params, sys);
+        dV_entry = design.delta_v_m_s;
+
+        fprintf('   HOHMANN drag-aware deorbit: %s retrograde %.3f m/s from Python design...\n', ...
+                char(design.burn_model), dV_entry);
+        if isfield(design, 'predicted_entry_fpa_deg') && isfinite(design.predicted_entry_fpa_deg)
+            fprintf('      Python prediction: %.1f km interface after %.2f min total, FPA %.3f deg\n', ...
+                    sys.h_entry_interface/1000, design.predicted_total_time_s/60, design.predicted_entry_fpa_deg);
+        end
+        if design.burn_model == "FINITE_BURN"
+            fprintf('      finite burn: %.1f N, Isp %.1f s, predicted duration %.2f min, steering %s\n', ...
+                    design.finite_burn_thrust_N, design.finite_burn_isp_s, ...
+                    design.predicted_burn_duration_s/60, char(design.burn_steering));
+        end
+
+        [X_chaser, X_target, dV_entry, fuel_entry, hist_burn, burn_info] = ...
+            apply_retrograde_deorbit_burn_local(X_chaser, X_target, dV_entry, sys, design, true);
+        dV_used = dV_used + dV_entry;
+        fuel_used = fuel_used + fuel_entry;
+        info.entry_injection_dV = dV_entry;
+        info.entry_injection_fuel = fuel_entry;
+        info.drag_deorbit_design = design;
+        info.drag_deorbit_burn = burn_info;
+
+        hist = append_phase3_hist_local(hist, hist_burn);
+
+        if burn_info.interface_reached
+            actual_fpa = flight_path_angle_deg_local(X_chaser(1:3), X_chaser(4:6));
+            fprintf('      %.1f km interface reached during burn after %.2f min; actual FPA %.3f deg; deorbit fuel charged: %.4f kg.\n', ...
+                    sys.h_entry_interface/1000, burn_info.duration_s/60, actual_fpa, fuel_entry);
+            info.reentry_coast_time = 0;
+            return;
+        end
+
+        dt_reentry = get_phase3_param_local(custom_params, 'dt_reentry_coast', 2);
+        default_reentry_time = max(1.5 * design.predicted_coast_time_s, design.predicted_coast_time_s + 600);
+        max_reentry_time = get_phase3_param_local(custom_params, 'max_reentry_coast_time', default_reentry_time);
+        max_reentry_time = get_phase3_param_local(custom_params, 'drag_deorbit_max_coast_time_s', max_reentry_time);
+
+        [X_chaser, X_target, hist_entry, coast_time] = ...
+            propagate_until_altitude_local(X_chaser, X_target, sys, sys.h_entry_interface, max_reentry_time, dt_reentry, hist.time_end);
+        hist = append_phase3_hist_local(hist, hist_entry);
+        info.reentry_coast_time = coast_time;
+
+        actual_fpa = flight_path_angle_deg_local(X_chaser(1:3), X_chaser(4:6));
+        fprintf('      %.1f km interface reached after burn %.2f min + coast %.2f min; actual FPA %.3f deg; deorbit fuel charged: %.4f kg.\n', ...
+                sys.h_entry_interface/1000, burn_info.duration_s/60, coast_time/60, actual_fpa, fuel_entry);
+        return;
+    end
+
     [target_reentry_r, fpa_calc] = compute_reentry_target_radius_local(norm(X_chaser(1:3)), sys);
     info.fpa_calc = fpa_calc;
     info.reentry_target_radius = target_reentry_r;
@@ -1767,6 +1879,316 @@ function [X_chaser, dV_mag, fuel_used] = apply_reentry_departure_impulse_local(X
     fuel_used = m0 - m1;
     if charge_fuel
         X_chaser(14) = m1;
+    end
+end
+
+function [X_chaser, dV_mag, fuel_used] = apply_retrograde_deorbit_impulse_local(X_chaser, delta_v_m_s, sys, charge_fuel)
+    if delta_v_m_s <= 0 || ~isfinite(delta_v_m_s)
+        error('Drag-aware deorbit delta-V must be positive and finite.');
+    end
+
+    v_current = norm(X_chaser(4:6));
+    if v_current <= eps
+        error('Cannot apply retrograde deorbit impulse with near-zero velocity.');
+    end
+
+    dV_mag = delta_v_m_s;
+    X_chaser(4:6) = X_chaser(4:6) - dV_mag * X_chaser(4:6) / v_current;
+
+    m0 = X_chaser(14);
+    m1 = m0 * exp(-dV_mag / (sys.Isp * sys.g0));
+    fuel_used = m0 - m1;
+    if charge_fuel
+        X_chaser(14) = m1;
+    end
+end
+
+function [X_chaser, X_target, dV_mag, fuel_used, hist, burn_info] = ...
+    apply_retrograde_deorbit_burn_local(X_chaser, X_target, delta_v_m_s, sys, design, charge_fuel)
+
+    burn_model = normalize_deorbit_burn_model_local(get_phase3_param_local(design, 'burn_model', "IMPULSIVE"));
+    hist = init_phase3_hist_local();
+    burn_info = struct();
+    burn_info.burn_model = burn_model;
+    burn_info.commanded_delta_v_m_s = delta_v_m_s;
+    burn_info.interface_reached = false;
+
+    if burn_model == "IMPULSIVE"
+        [X_chaser, dV_mag, fuel_used] = apply_retrograde_deorbit_impulse_local(X_chaser, delta_v_m_s, sys, charge_fuel);
+        burn_info.duration_s = 0;
+        burn_info.delivered_delta_v_m_s = dV_mag;
+        burn_info.propellant_used_kg = fuel_used;
+        hist = log_phase3_state_local(hist, X_chaser, X_target, 0);
+        return;
+    end
+
+    if delta_v_m_s <= 0 || ~isfinite(delta_v_m_s)
+        error('Finite drag-aware deorbit delta-V must be positive and finite.');
+    end
+
+    thrust_N = get_phase3_param_local(design, 'finite_burn_thrust_N', sys.maneuver.finite_burn_thrust);
+    Isp_s = get_phase3_param_local(design, 'finite_burn_isp_s', sys.maneuver.finite_burn_isp);
+    dt_burn = get_phase3_param_local(design, 'finite_burn_dt_s', sys.maneuver.finite_burn_dt);
+    steering = normalize_deorbit_burn_steering_local(get_phase3_param_local(design, 'burn_steering', "VELOCITY_RETROGRADE"));
+
+    if thrust_N <= 0
+        error('Finite drag-aware deorbit requires positive thrust.');
+    end
+    if Isp_s <= 0
+        error('Finite drag-aware deorbit requires positive Isp.');
+    end
+    if dt_burn <= 0
+        error('Finite drag-aware deorbit requires positive dt.');
+    end
+
+    v_norm = norm(X_chaser(4:6));
+    if v_norm <= eps
+        error('Cannot start finite retrograde deorbit burn with near-zero velocity.');
+    end
+
+    fixed_retrograde_dir = -X_chaser(4:6) / v_norm;
+    m0 = X_chaser(14);
+    exhaust_velocity = Isp_s * sys.g0;
+    mf_commanded = m0 * exp(-delta_v_m_s / exhaust_velocity);
+    burn_duration_s = (m0 - mf_commanded) * exhaust_velocity / thrust_N;
+
+    burn_info.thrust_N = thrust_N;
+    burn_info.Isp_s = Isp_s;
+    burn_info.dt_burn_s = dt_burn;
+    burn_info.steering = steering;
+    burn_info.predicted_duration_s = burn_duration_s;
+    burn_info.initial_mass_kg = m0;
+    burn_info.commanded_final_mass_kg = mf_commanded;
+    burn_info.initial_burn_direction_eci = fixed_retrograde_dir;
+
+    design_mass_kg = get_phase3_param_local(design, 'initial_mass_kg', NaN);
+    if isfinite(design_mass_kg) && design_mass_kg > 0 && abs(m0 - design_mass_kg) / design_mass_kg > 0.02
+        fprintf('      note: JSON finite-burn design mass %.1f kg, actual Phase 3 mass %.1f kg; duration/fuel recomputed with actual mass.\n', ...
+                design_mass_kg, m0);
+    end
+
+    hist = log_phase3_state_local(hist, X_chaser, X_target, 0);
+    elapsed = 0;
+    while elapsed < burn_duration_s - 1e-12
+        dt_step = min(dt_burn, burn_duration_s - elapsed);
+        [X_chaser, X_target] = rk4_pair_step_deorbit_burn_local( ...
+            X_chaser, X_target, dt_step, sys, thrust_N, Isp_s, steering, fixed_retrograde_dir, elapsed);
+        elapsed = elapsed + dt_step;
+
+        if X_chaser(14) <= 0
+            error('Chaser mass depleted during finite drag-aware deorbit burn.');
+        end
+
+        hist = log_phase3_state_local(hist, X_chaser, X_target, elapsed);
+        if norm(X_chaser(1:3)) - sys.Re <= sys.h_entry_interface
+            burn_info.interface_reached = true;
+            break;
+        end
+    end
+
+    dV_mag = exhaust_velocity * log(m0 / X_chaser(14));
+    fuel_used = m0 - X_chaser(14);
+    if ~charge_fuel
+        X_chaser(14) = m0;
+    end
+
+    burn_info.duration_s = elapsed;
+    burn_info.delivered_delta_v_m_s = dV_mag;
+    burn_info.final_mass_kg = X_chaser(14);
+    burn_info.propellant_used_kg = fuel_used;
+end
+
+function dX = deorbit_burn_dynamics_local(X, sys, thrust_N, Isp_s, steering, fixed_retrograde_dir)
+    r = X(1:3);
+    v = X(4:6);
+    m = X(14);
+    r_norm = norm(r);
+
+    if m <= 0
+        error('Finite burn dynamics received non-positive mass.');
+    end
+
+    a_g = -sys.mu / r_norm^3 * r;
+    z2 = (r(3)/r_norm)^2;
+    factor = 1.5 * sys.J2 * (sys.mu/r_norm^2) * (sys.Re/r_norm)^2;
+    a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1);
+                      (r(2)/r_norm)*(5*z2 - 1);
+                      (r(3)/r_norm)*(5*z2 - 3) ];
+    a_drag = Atmospheric_Drag_Acceleration(r, v, m, sys, "chaser");
+
+    if steering == "FIXED_INITIAL_RETROGRADE"
+        thrust_dir = fixed_retrograde_dir(:) / norm(fixed_retrograde_dir);
+    else
+        v_norm = norm(v);
+        if v_norm <= eps
+            thrust_dir = fixed_retrograde_dir(:) / norm(fixed_retrograde_dir);
+        else
+            thrust_dir = -v / v_norm;
+        end
+    end
+
+    a_thrust = thrust_dir * (thrust_N / m);
+    dm = -thrust_N / (Isp_s * sys.g0);
+    dX = [v; a_g + a_j2 + a_drag + a_thrust; zeros(7,1); dm];
+end
+
+function [X_chaser, X_target] = rk4_pair_step_deorbit_burn_local( ...
+    X_chaser, X_target, dt_step, sys, thrust_N, Isp_s, steering, fixed_retrograde_dir, t_abs)
+
+    if ~isempty(X_target)
+        X_t_state = [X_target; zeros(7,1); sys.Target_Mass];
+        k1_t = Env_EOM(t_abs,             X_t_state,                [0;0;0], [0;0;0], sys, false);
+        k2_t = Env_EOM(t_abs+dt_step/2,   X_t_state+k1_t*dt_step/2, [0;0;0], [0;0;0], sys, false);
+        k3_t = Env_EOM(t_abs+dt_step/2,   X_t_state+k2_t*dt_step/2, [0;0;0], [0;0;0], sys, false);
+        k4_t = Env_EOM(t_abs+dt_step,     X_t_state+k3_t*dt_step,   [0;0;0], [0;0;0], sys, false);
+        X_target = X_target + (dt_step/6)*(k1_t(1:6) + 2*k2_t(1:6) + 2*k3_t(1:6) + k4_t(1:6));
+    end
+
+    k1 = deorbit_burn_dynamics_local(X_chaser,             sys, thrust_N, Isp_s, steering, fixed_retrograde_dir);
+    k2 = deorbit_burn_dynamics_local(X_chaser+k1*dt_step/2,sys, thrust_N, Isp_s, steering, fixed_retrograde_dir);
+    k3 = deorbit_burn_dynamics_local(X_chaser+k2*dt_step/2,sys, thrust_N, Isp_s, steering, fixed_retrograde_dir);
+    k4 = deorbit_burn_dynamics_local(X_chaser+k3*dt_step,  sys, thrust_N, Isp_s, steering, fixed_retrograde_dir);
+    X_chaser = X_chaser + (dt_step/6)*(k1 + 2*k2 + 2*k3 + k4);
+
+    if norm(X_chaser(7:10)) > 0
+        X_chaser(7:10) = X_chaser(7:10) / norm(X_chaser(7:10));
+    end
+end
+
+function model = normalize_deorbit_burn_model_local(value)
+    model = upper(strtrim(string(value)));
+    if model == "FINITE" || model == "FINITE_BURN" || model == "FINITE_IMPULSE" || model == "CONTINUOUS"
+        model = "FINITE_BURN";
+    elseif model == "IMPULSIVE" || model == "INSTANT" || model == "INSTANTANEOUS" || model == "CUSTOM_IMPULSE"
+        model = "IMPULSIVE";
+    else
+        error('Unsupported drag-aware deorbit burn model: %s', char(model));
+    end
+end
+
+function steering = normalize_deorbit_burn_steering_local(value)
+    steering = upper(strrep(strtrim(string(value)), '-', '_'));
+    if steering == "RETROGRADE" || steering == "VELOCITY" || steering == "VELOCITY_FOLLOWING" || steering == "VELOCITY_RETROGRADE"
+        steering = "VELOCITY_RETROGRADE";
+    elseif steering == "FIXED" || steering == "FIXED_START" || steering == "FIXED_RETROGRADE" || steering == "FIXED_INITIAL_RETROGRADE"
+        steering = "FIXED_INITIAL_RETROGRADE";
+    else
+        error('Unsupported drag-aware deorbit burn steering: %s', char(steering));
+    end
+end
+
+function tf = should_use_drag_deorbit_design_local(sys, custom_params)
+    if ~orbital_drag_enabled_local(sys)
+        tf = false;
+        return;
+    end
+
+    mode = upper(string(get_phase3_param_local(custom_params, 'drag_deorbit_design_mode', "AUTO")));
+    tf = ~(mode == "OFF" || mode == "NONE" || mode == "DISABLED");
+end
+
+function tf = orbital_drag_enabled_local(sys)
+    tf = false;
+    if ~isfield(sys, 'environment') || ~isfield(sys.environment, 'atmospheric_drag')
+        return;
+    end
+
+    drag = sys.environment.atmospheric_drag;
+    if isfield(drag, 'enabled')
+        tf = parse_bool_setting_local(drag.enabled);
+    end
+    if tf && isfield(drag, 'model')
+        model = upper(string(drag.model));
+        tf = ~(model == "OFF" || model == "NONE" || model == "DISABLED" || model == "0");
+    end
+end
+
+function design = load_drag_deorbit_design_local(custom_params, sys)
+    manual_dv = get_phase3_param_local(custom_params, 'drag_deorbit_delta_v_m_s', []);
+    if ~isempty(manual_dv)
+        design = struct();
+        design.delta_v_m_s = manual_dv;
+        design.predicted_coast_time_s = get_phase3_param_local(custom_params, 'drag_deorbit_max_coast_time_s', 2*pi*sqrt((sys.Re + sys.h_target)^3/sys.mu));
+        design.predicted_total_time_s = design.predicted_coast_time_s;
+        design.predicted_burn_duration_s = 0;
+        design.predicted_entry_fpa_deg = NaN;
+        design.burn_model = normalize_deorbit_burn_model_local(get_phase3_param_local(custom_params, 'burn_model', sys.maneuver.default_burn_model));
+        design.burn_steering = "VELOCITY_RETROGRADE";
+        design.finite_burn_thrust_N = get_phase3_param_local(custom_params, 'finite_burn_thrust', sys.maneuver.finite_burn_thrust);
+        design.finite_burn_isp_s = get_phase3_param_local(custom_params, 'finite_burn_isp', sys.maneuver.finite_burn_isp);
+        design.finite_burn_dt_s = get_phase3_param_local(custom_params, 'dt_burn', sys.maneuver.finite_burn_dt);
+        design.source = "manual Mission_Run_Config.m override";
+        return;
+    end
+
+    design_file = string(get_phase3_param_local(custom_params, 'drag_deorbit_design_file', "configs/latest_drag_deorbit_solution.json"));
+    if strlength(design_file) == 0
+        error('Drag-aware HOHMANN deorbit requires a drag_deorbit_design_file or manual delta_v_m_s.');
+    end
+
+    design_path = resolve_project_path_local(design_file);
+    if ~isfile(design_path)
+        error(['Drag-aware deorbit design JSON not found: %s\n' ...
+               'Generate it with: python DragDeorbitDesigner.py --matlab-config-out %s'], ...
+               char(design_path), char(design_file));
+    end
+
+    cfg = jsondecode(fileread(design_path));
+    if ~get_json_bool_local(cfg, {'phase3','drag_deorbit','enabled'}, false)
+        error('Drag-aware deorbit design JSON is not enabled: %s', char(design_path));
+    end
+
+    entry_alt_km = get_json_number_local(cfg, {'phase3','entry_interface_altitude_km'}, NaN);
+    if isfinite(entry_alt_km) && abs(entry_alt_km - sys.h_entry_interface/1000) > 1e-3
+        error('Drag deorbit JSON entry interface %.6f km does not match current %.6f km. Regenerate the design JSON.', ...
+              entry_alt_km, sys.h_entry_interface/1000);
+    end
+
+    fpa_deg = get_json_number_local(cfg, {'phase3','flight_path_angle_deg'}, NaN);
+    if isfinite(fpa_deg) && abs(abs(fpa_deg) - abs(rad2deg(sys.reentry_flight_path_angle))) > 1e-3
+        error('Drag deorbit JSON FPA %.6f deg does not match current %.6f deg. Regenerate the design JSON.', ...
+              fpa_deg, rad2deg(sys.reentry_flight_path_angle));
+    end
+
+    design = struct();
+    design.delta_v_m_s = get_json_number_local(cfg, {'phase3','drag_deorbit','delta_v_m_s'}, NaN);
+    design.burn_model = normalize_deorbit_burn_model_local(get_json_string_local(cfg, {'phase3','drag_deorbit','burn_model'}, "IMPULSIVE"));
+    design.burn_steering = normalize_deorbit_burn_steering_local(get_json_string_local(cfg, {'phase3','drag_deorbit','burn_steering'}, "VELOCITY_RETROGRADE"));
+    design.predicted_burn_duration_s = get_json_number_local(cfg, {'phase3','drag_deorbit','predicted_burn_duration_s'}, 0);
+    design.predicted_burn_time_s = get_json_number_local(cfg, {'phase3','drag_deorbit','predicted_burn_time_s'}, design.predicted_burn_duration_s);
+    design.initial_mass_kg = get_json_number_local(cfg, {'phase3','drag_deorbit','initial_mass_kg'}, ...
+        get_json_number_local(cfg, {'maneuver','initial_mass_kg'}, NaN));
+    design.finite_burn_thrust_N = get_json_number_local(cfg, {'phase3','drag_deorbit','finite_burn_thrust_N'}, ...
+        get_json_number_local(cfg, {'maneuver','finite_burn_thrust_N'}, sys.maneuver.finite_burn_thrust));
+    design.finite_burn_isp_s = get_json_number_local(cfg, {'phase3','drag_deorbit','finite_burn_isp_s'}, ...
+        get_json_number_local(cfg, {'maneuver','finite_burn_isp_s'}, sys.maneuver.finite_burn_isp));
+    design.finite_burn_dt_s = get_json_number_local(cfg, {'phase3','drag_deorbit','finite_burn_dt_s'}, ...
+        get_json_number_local(cfg, {'maneuver','finite_burn_dt_s'}, sys.maneuver.finite_burn_dt));
+    design.predicted_coast_time_s = get_json_number_local(cfg, {'phase3','drag_deorbit','predicted_coast_time_s'}, NaN);
+    design.predicted_total_time_s = get_json_number_local(cfg, {'phase3','drag_deorbit','predicted_total_time_s'}, design.predicted_coast_time_s + design.predicted_burn_time_s);
+    design.predicted_entry_fpa_deg = get_json_number_local(cfg, {'phase3','drag_deorbit','predicted_entry_fpa_deg'}, NaN);
+    design.predicted_entry_speed_m_s = get_json_number_local(cfg, {'phase3','drag_deorbit','predicted_entry_speed_m_s'}, NaN);
+    design.source = string(get_json_string_local(cfg, {'source'}, "DragDeorbitDesigner.py"));
+    design.path = string(design_path);
+
+    if ~isfinite(design.delta_v_m_s) || design.delta_v_m_s <= 0
+        error('Drag deorbit JSON has invalid delta_v_m_s: %s', char(design_path));
+    end
+    if ~isfinite(design.predicted_coast_time_s) || design.predicted_coast_time_s <= 0
+        design.predicted_coast_time_s = 2*pi*sqrt((sys.Re + sys.h_target)^3/sys.mu);
+    end
+    if ~isfinite(design.predicted_total_time_s) || design.predicted_total_time_s <= 0
+        design.predicted_total_time_s = design.predicted_coast_time_s + max(0, design.predicted_burn_time_s);
+    end
+end
+
+function path = resolve_project_path_local(path_value)
+    path_text = string(path_value);
+    if is_absolute_path_local(path_text)
+        path = path_text;
+    else
+        root_dir = fileparts(mfilename('fullpath'));
+        path = string(fullfile(root_dir, char(path_text)));
     end
 end
 

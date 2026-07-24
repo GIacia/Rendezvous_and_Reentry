@@ -1,0 +1,148 @@
+{
+  "archive": {
+    "case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_e72b53a9_6c8a2267_20260724_044740Z",
+    "created_at": "2026-07-24T04:47:40Z",
+    "result_hash": "6c8a2267c8496c7c",
+    "schema_version": 1,
+    "settings_hash": "e72b53a9e59e1c34",
+    "settings_signature": {
+      "environment": {
+        "atmospheric_drag": {
+          "chaser_area_m2": 4.0,
+          "chaser_cd": 2.2,
+          "co_rotate_atmosphere": true,
+          "earth_rotation_rad_s": 7.2921159e-05,
+          "enabled": true,
+          "model": "ISA76",
+          "target_area_m2": 4.0,
+          "target_cd": 2.2,
+          "target_mass_kg": 2000.0
+        }
+      },
+      "maneuver": {
+        "burn_model": "FINITE_BURN",
+        "burn_steering": "velocity_retrograde",
+        "finite_burn_dt_s": 1.0,
+        "finite_burn_isp_s": 200.0,
+        "finite_burn_max_step_s": 1.0,
+        "finite_burn_thrust_N": 300.0,
+        "initial_mass_kg": 2000.0
+      },
+      "phase3": {
+        "entry_interface_altitude_km": 120.0,
+        "flight_path_angle_deg": 4.0
+      },
+      "scenario": {
+        "h_start_km": 500.0,
+        "start_argument_deg": 0.0
+      },
+      "schema_version": 1,
+      "source": "DragDeorbitDesigner.py"
+    }
+  },
+  "environment": {
+    "atmospheric_drag": {
+      "chaser_area_m2": 4.0,
+      "chaser_cd": 2.2,
+      "co_rotate_atmosphere": true,
+      "earth_rotation_rad_s": 7.2921159e-05,
+      "enabled": true,
+      "model": "ISA76",
+      "target_area_m2": 4.0,
+      "target_cd": 2.2,
+      "target_mass_kg": 2000.0
+    }
+  },
+  "maneuver": {
+    "burn_model": "FINITE_BURN",
+    "burn_steering": "velocity_retrograde",
+    "finite_burn_dt_s": 1.0,
+    "finite_burn_isp_s": 200.0,
+    "finite_burn_max_step_s": 1.0,
+    "finite_burn_thrust_N": 300.0,
+    "initial_mass_kg": 2000.0
+  },
+  "optimizer": {
+    "evaluations": 77,
+    "fpa_error_deg": -0.4923035682789725,
+    "method": "target_fpa_min_abs_error",
+    "success": true,
+    "target_fpa_deg": 4.0
+  },
+  "phase3": {
+    "drag_deorbit": {
+      "burn_completed": false,
+      "burn_direction": "retrograde",
+      "burn_model": "FINITE_BURN",
+      "burn_steering": "velocity_retrograde",
+      "commanded_delta_v_m_s": 352.550573,
+      "delivered_delta_v_m_s": 333.76175180008903,
+      "delta_v_m_s": 352.550573,
+      "design_method": "target_fpa_min_abs_error",
+      "enabled": true,
+      "finite_burn_dt_s": 1.0,
+      "finite_burn_isp_s": 200.0,
+      "finite_burn_max_step_s": 1.0,
+      "finite_burn_thrust_N": 300.0,
+      "fpa_error_deg": -0.4923035682789725,
+      "initial_mass_kg": 2000.0,
+      "max_coast_time_s": 21600.0,
+      "post_burn_altitude_km": null,
+      "post_burn_fpa_deg": null,
+      "post_burn_speed_m_s": null,
+      "predicted_burn_duration_s": 2151.2074849049663,
+      "predicted_burn_time_s": 2046.0535909986002,
+      "predicted_coast_time_s": 0.0,
+      "predicted_entry_altitude_km": 119.99999999999909,
+      "predicted_entry_fpa_deg": -3.5076964317210275,
+      "predicted_entry_speed_m_s": 7722.124719758407,
+      "predicted_post_burn_mass_kg": 1687.0408970953501,
+      "predicted_propellant_used_kg": 312.95910290464985,
+      "predicted_total_time_s": 2046.0535909986002,
+      "rule_of_thumb_delta_v_m_s": 100.0,
+      "rule_of_thumb_result": {
+        "burn_completed": true,
+        "burn_model": "FINITE_BURN",
+        "burn_samples": 654,
+        "burn_solver_success": true,
+        "burn_steering": "velocity_retrograde",
+        "burn_time_s": 649.9565912107047,
+        "coast_time_s": 21600.0,
+        "commanded_delta_v_m_s": 100.0,
+        "delivered_delta_v_m_s": 100.00000000006601,
+        "delta_v_m_s": 100.0,
+        "final_altitude_km": 493.10150801974396,
+        "final_fpa_deg": -0.13572570150835098,
+        "final_speed_m_s": 7521.328946897188,
+        "initial_burn_direction_eci": [
+          -0.0,
+          -0.0,
+          -1.0
+        ],
+        "initial_mass_kg": 2000.0,
+        "post_burn_altitude_km": 484.4828757855712,
+        "post_burn_fpa_deg": -0.5257477682311467,
+        "post_burn_speed_m_s": 7528.893626826004,
+        "predicted_burn_duration_s": 649.9565912107047,
+        "predicted_post_burn_mass_kg": 1900.5843089315226,
+        "predicted_propellant_used_kg": 99.41569106847737,
+        "reached_interface": false,
+        "samples": 2165,
+        "solver_message": "The solver successfully reached the end of the integration interval.",
+        "solver_success": true,
+        "total_time_s": 22249.956591210706
+      },
+      "search_max_delta_v_m_s": 500.0,
+      "search_min_delta_v_m_s": 40.0
+    },
+    "entry_interface_altitude_km": 120.0,
+    "flight_path_angle_deg": 4.0,
+    "mode": "HOHMANN"
+  },
+  "scenario": {
+    "h_start_km": 500.0,
+    "start_argument_deg": 0.0
+  },
+  "schema_version": 1,
+  "source": "DragDeorbitDesigner.py"
+}

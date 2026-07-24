@@ -9,7 +9,7 @@ Currently included:
 - central Earth gravity
 - J2 perturbation
 - optional atmospheric drag with an ISA76-style standard-atmosphere density model
-- 120 km atmospheric-entry propagation with simplified drag/lift, heat-flux, and line-of-sight diagnostics
+- configurable entry-interface atmospheric propagation with simplified drag/lift, heat-flux, and line-of-sight diagnostics
 
 Currently neglected:
 
@@ -32,18 +32,21 @@ This is useful for:
 - transfer geometry studies
 - mission-sequence prototyping
 - early finite-burn sensitivity checks using a fixed thrust/Isp model
+- drag-aware LEO deorbit checks using either an impulsive or finite-duration single retrograde burn followed by numerical atmospheric-drag propagation
 
 But it is limited for:
 
 - finite-burn attitude-coupled maneuver analysis
 - exact burn reconstruction
 - high-fidelity thruster execution modeling
+- full deorbit guidance, landing footprint targeting, or dispersions under uncertain atmosphere
+- high-dimensional trajectory optimization; use this simulator for validation, sensitivity checks, and Monte Carlo after an optimizer has produced a candidate trajectory
 
 The atmospheric-entry stage is also simplified:
 
 - the re-entry vehicle keeps a fixed AoA and bank angle during entry
-- Cd is assumed constant because the supplied PPT provides geometry and L/D trends, not full Cd/Cl tables
-- L/D curves are approximate digitizations from slide images
+- Cd is assumed constant because the externally provided shape data includes geometry and L/D trends, not full Cd/Cl tables
+- L/D curves are approximate values derived from externally provided data
 - heat flux uses a Sutton-Graves stagnation-point estimate
 - communication is checked as geometric Earth-limb line of sight only; plasma blackout physics is not modeled yet
 

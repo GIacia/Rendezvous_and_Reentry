@@ -2,7 +2,7 @@
 
 ## 요약
 
-본 코드는 Earth orbit의 unmanned chaser가 target spacecraft와 rendezvous / proximity operation을 수행한 뒤, 120 km entry interface에서 re-entry vehicle을 분리하여 atmospheric re-entry를 해석하는 mission-level simulator이다. MATLAB은 전체 mission sequence, 3-DOF/6-DOF propagation, proximity operation, de-orbit, re-entry diagnostics를 담당하고, Python은 Phase 1 `CUSTOM_IMPULSE`에 들어가는 `phase angle`, `delta-V`, `gamma`를 shooting / optimization 방식으로 탐색한 뒤 MATLAB-readable JSON으로 넘기는 역할을 한다.
+본 코드는 Earth orbit의 unmanned chaser가 target spacecraft와 rendezvous / proximity operation을 수행한 뒤, configurable entry interface에서 re-entry vehicle을 분리하여 atmospheric re-entry를 해석하는 mission-level simulator이다. 기본 entry-interface altitude는 120 km이다. MATLAB은 전체 mission sequence, 3-DOF/6-DOF propagation, proximity operation, de-orbit, re-entry diagnostics를 담당하고, Python은 Phase 1 `CUSTOM_IMPULSE`에 들어가는 `phase angle`, `delta-V`, `gamma`를 shooting / optimization 방식으로 탐색한 뒤 MATLAB-readable JSON으로 넘기는 역할을 한다.
 
 현재 active code의 핵심 선택지는 다음과 같다.
 
@@ -12,7 +12,6 @@
 - Phase 3 re-entry setup: `HOHMANN`, `R_BAR_200_FPA`
 - Phase 4 re-entry vehicle shape: `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, `TPS_MIN`
 
-짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션을 `FINITE_BURN`으로 사용한다.
 짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션을 `FINITE_BURN`으로 사용한다.
 
 ---
@@ -30,10 +29,10 @@
    Target-centered `LVLH frame`에서 S2, S3, S4 waypoint를 따라 접근한다. 기본 구조는 S2 hold trim, cycloidal drift, R-bar hop, braking impulse로 구성된다.
 
 3. **Phase 3: De-orbit / Entry Interface Setup**
-   Vehicle을 120 km atmospheric entry interface로 보낸다. `HOHMANN`은 direct FPA-targeted descent를 수행하고, `R_BAR_200_FPA`는 200 km parking orbit과 R-bar alignment를 거친 뒤 120 km interface로 진입한다.
+   Vehicle을 configurable atmospheric entry interface로 보낸다. `HOHMANN`은 direct FPA-targeted descent를 수행하고, `R_BAR_200_FPA`는 configurable parking orbit과 R-bar alignment를 거친 뒤 entry interface로 진입한다.
 
 4. **Phase 4: Atmospheric Entry**
-   120 km부터 re-entry vehicle을 별도 객체로 전파한다. 동시에 chaser는 orbiting relay로 계속 propagation되며, re-entry vehicle과 chaser 사이의 geometric line of sight가 유지되는지 확인한다.
+   Entry interface부터 re-entry vehicle을 별도 객체로 전파한다. 동시에 chaser는 orbiting relay로 계속 propagation되며, re-entry vehicle과 chaser 사이의 geometric line of sight가 유지되는지 확인한다.
 
 ## 2. Coordinate frame
 
@@ -115,7 +114,7 @@ m_f = m_0 * exp(-DeltaV / (Isp * g0))
 
 ### 4.2 Finite burn
 
-`FINITE_BURN` mode는 같은 delta-V vector를 짧은 burn duration 동안 fixed direction thrust로 나누어 적용한다. 이것은 low-thrust spiral이 아니다. 사용자가 의도한 것처럼 impulsive maneuver를 실제 high-thrust firing duration으로 펼친 모델이다.
+`FINITE_BURN` mode는 impulsive delta-V를 실제 thrust/Isp와 mass flow를 가진 finite-duration firing으로 펼친 모델이다. 이것은 low-thrust spiral이나 full trajectory optimization이 아니다.
 
 Burn duration은 mass flow와 rocket equation으로 근사한다.
 
@@ -125,7 +124,7 @@ m_f = m_0 * exp(-DeltaV / ve)
 burn_time = (m_0 - m_f) * ve / thrust
 ```
 
-현재 finite burn은 maneuver direction을 burn 시작 시점에 고정한다. 아주 긴 burn이나 attitude steering이 중요한 경우에는 향후 guidance-coupled finite burn model이 필요하다.
+Phase 1 finite burn은 maneuver direction을 burn 시작 시점에 고정한다. Drag-aware Phase 3 deorbit designer는 별도로 velocity-retrograde steering을 기본값으로 사용한다. 아주 긴 burn이나 attitude steering이 중요한 경우에는 향후 guidance-coupled finite burn model이 필요하다.
 
 ### 4.3 Multi-Hohmann과 thermal constraint
 
@@ -199,25 +198,31 @@ S3부터 S4까지는 여러 R-bar waypoint로 나누어 이동한다. 각 hop은
 
 ## 7. Phase 3 entry interface design
 
-Phase 3의 목적은 re-entry vehicle을 120 km atmospheric entry interface에 보내는 것이다. 여기서 중요한 값은 altitude뿐 아니라 `flight path angle (FPA)`이다.
+Phase 3의 목적은 re-entry vehicle을 configurable atmospheric entry interface에 보내는 것이다. 기본값은 120 km이며, 여기서 중요한 값은 altitude뿐 아니라 `flight path angle (FPA)`이다.
 
 ```text
 FPA = atan2(v_radial, v_horizontal)
 ```
 
-현재 target FPA magnitude는 `Mission_Config.m`의 `sys.reentry_flight_path_angle`로 설정되며 기본값은 4 deg이다. Descending entry이므로 실제 출력 FPA는 약 -4 deg가 된다.
+현재 target FPA magnitude는 `Mission_Run_Config.m`의 `run.phase3.flight_path_angle_deg`로 조작하며, 내부에서는 `sys.reentry_flight_path_angle`로 저장된다. 기본값은 4 deg이다. Descending entry이므로 실제 출력 FPA는 약 -4 deg가 된다.
 
 ### 7.1 HOHMANN mode
 
-`HOHMANN` Phase 3 mode는 현재 상태에서 120 km / target FPA interface로 향하는 de-orbit injection을 수행하고, 120 km crossing에서 propagation을 멈춘다. 예전처럼 120 km 아래로 내려간 뒤 nonphysical circularization을 수행하지 않는다.
+`HOHMANN` Phase 3 mode는 현재 상태에서 configured entry-interface altitude / target FPA로 향하는 de-orbit injection을 수행하고, 해당 altitude crossing에서 propagation을 멈춘다. 예전처럼 interface 아래로 내려간 뒤 nonphysical circularization을 수행하지 않는다.
+
+단, orbital atmospheric drag가 켜진 경우에는 이 dragless conic 계산을 그대로 쓰지 않는다. 이때는 `DragDeorbitDesigner.py`가 만든 JSON의 single retrograde deorbit burn 값을 읽고, 그 뒤 MATLAB에서 J2 + atmospheric drag로 entry interface까지 전파한다. 즉 drag-on `HOHMANN`은 "LEO에서 작은 retro burn으로 perigee를 낮추고, 이후 에너지는 대기저항이 대부분 제거한다"는 실제 LEO deorbit 개념에 더 가까운 형태이다.
+
+주의할 점은 "대략 100 m/s"가 보편 상수가 아니라는 것이다. 400 km급 orbit과 shallow entry-interface angle에서는 100 m/s급 deorbit burn이 타당할 수 있지만, 현재 기본값처럼 500 km start, 120 km interface, 4 deg FPA를 동시에 요구하면 필요한 retrograde delta-V가 약 275 m/s 수준으로 올라간다.
+
+현재 임시 정책으로는 `Mission_Run_Config.m`의 `run.environment.atmospheric_drag.apply_from_phase = "PHASE3"`를 사용한다. 따라서 Phase 1/2 rendezvous와 berthing 구간은 기존처럼 drag-free J2 propagation을 쓰고, berthing 이후 Phase 3부터 orbital drag를 켠다. Phase 1부터 drag를 켜려면 drag-on 조건으로 다시 생성한 Phase 1 Python optimizer JSON이 필요하다.
 
 ### 7.2 R_BAR_200_FPA mode
 
 `R_BAR_200_FPA` mode는 세 단계로 구성된다.
 
-1. 200 km parking orbit으로 lowering
+1. configured parking orbit으로 lowering
 2. target 기준 R-bar 아래쪽 alignment까지 coast
-3. 120 km / target FPA interface injection
+3. configured entry-interface altitude / target FPA injection
 
 이 mode는 re-entry 직전 geometry를 target-relative 관점에서 더 명확히 만들기 위한 option이다.
 
@@ -239,7 +244,7 @@ MATLAB에서 `atmosisa`가 사용 가능하고 altitude가 lower atmosphere 범�
 
 ## 9. Re-entry aerodynamics
 
-Re-entry vehicle shape는 사용자가 제공한 PPT의 geometry와 L/D graph를 기반으로 한다. 현재 code에 들어간 shape는 다음 네 가지이다.
+Re-entry vehicle shape는 외부 제공 geometry와 L/D trend 데이터를 기반으로 한다. 현재 code에 들어간 shape는 다음 네 가지이다.
 
 - `COMPROMISE`
 - `HEATLOAD_MIN`
@@ -248,7 +253,7 @@ Re-entry vehicle shape는 사용자가 제공한 PPT의 geometry와 L/D graph를
 
 각 shape는 length, max width, max height, base diameter, nose radius, aspect ratio, reference area, approximate L/D curve를 가진다.
 
-현재 limitation은 `Cd`가 shape별 high-fidelity aerodynamic table이 아니라 constant assumption이라는 점이다. PPT에는 geometry와 L/D trend는 있지만 Mach/AoA별 `Cd`, `Cl`, `Cm` table은 없으므로, 지금 모델은 trajectory-level sensitivity용으로 보는 것이 맞다.
+현재 limitation은 `Cd`가 shape별 high-fidelity aerodynamic table이 아니라 constant assumption이라는 점이다. 외부 제공 데이터에는 geometry와 L/D trend는 있지만 Mach/AoA별 `Cd`, `Cl`, `Cm` table은 없으므로, 지금 모델은 trajectory-level sensitivity용으로 보는 것이 맞다.
 
 Lift는 drag magnitude와 L/D lookup으로 계산된다.
 
@@ -401,6 +406,20 @@ Atmospheric drag를 Python optimization에도 반영하고 MATLAB config로 넘�
 python J2PolarHohmannShooting.py --no-plot --atmospheric-drag isa76 --matlab-config-out configs/latest_python_solution.json
 ```
 
+Drag-on `HOHMANN` Phase 3의 deorbit burn은 별도 Python helper가 계산한다.
+
+```bash
+python DragDeorbitDesigner.py --start-altitude-km 500 --entry-interface-altitude-km 120 --flight-path-angle-deg 4 --matlab-config-out configs/latest_drag_deorbit_solution.json
+```
+
+기본값은 `--burn-model finite_burn`, `--burn-steering velocity_retrograde`, `--finite-burn-thrust-n 3000`이다. `--burn-model impulsive`를 주면 순간 감속 해를 만들고, `--burn-model continuous`는 Phase 3 helper 안에서 finite-burn alias로 처리한다. 이것은 high-dimensional trajectory optimizer가 아니라 single retrograde burn parameter를 찾는 low-dimensional design helper이다.
+
+MATLAB은 `Mission_Run_Config.m`의 `run.phase3.drag_deorbit_design.file`에서 이 JSON을 읽는다.
+
+Finite-burn JSON의 mass는 설계 기준값으로 기록된다. MATLAB은 실제 Phase 3 시작 시점의 남은 mass로 burn duration과 propellant를 다시 계산한다.
+
+현재 기본 run-control에서는 orbital drag를 Phase 3부터만 적용한다. 즉 Phase 1 optimizer JSON은 drag-off archive를 그대로 쓸 수 있고, drag-aware deorbit JSON은 Phase 3에서만 사용된다.
+
 Python script는 output path의 parent directory가 없으면 자동으로 생성한다.
 
 현재 Python export는 단일 `latest` 파일만 덮어쓰지 않고, 결과를 archive에도 저장한다.
@@ -455,7 +474,7 @@ setenv('RENDEZVOUS_BURN_MODEL','FINITE_BURN')
 Main_Mission_Simulator
 ```
 
-`CONTINUOUS`는 더 이상 지원하지 않는다. 이 프로젝트에서 finite burn은 low-thrust continuous ascent가 아니라, impulsive delta-V를 수 초~수십 초의 실제 thrust firing으로 펼친 model이다.
+Main MATLAB maneuver model에서는 `CONTINUOUS`를 일반 burn model로 쓰지 않는다. `FINITE_BURN`은 low-thrust continuous ascent가 아니라, impulsive delta-V를 실제 thrust firing으로 펼친 model이다. 단, `DragDeorbitDesigner.py`의 `--burn-model continuous`는 Phase 3 deorbit helper에서 `finite_burn` alias로만 허용된다.
 
 ## 5. Phase 3 mode 선택
 
@@ -473,7 +492,7 @@ setenv('RENDEZVOUS_PHASE3_MODE','R_BAR_200_FPA')
 Main_Mission_Simulator
 ```
 
-`R_BAR_200_FPA`에서 final 200 km -> 120 km injection의 propellant를 budget에 포함하려면:
+`R_BAR_200_FPA`에서 final parking-orbit -> entry-interface injection의 propellant를 budget에 포함하려면:
 
 ```matlab
 setenv('RENDEZVOUS_CHARGE_FINAL_REENTRY_FUEL','on')
@@ -623,7 +642,7 @@ ISA76-style density helper이다. MATLAB `atmosisa`가 가능하면 사용하고
 
 ### `Reentry_Propagator.m`
 
-120 km 이후 atmospheric entry를 전파한다. Drag, lift, heat flux, dynamic pressure, g-load, LOS geometry를 모두 기록한다.
+Entry interface 이후 atmospheric entry를 전파한다. Drag, lift, heat flux, dynamic pressure, g-load, LOS geometry를 모두 기록한다.
 
 ### `J2PolarHohmann.py`
 
@@ -632,6 +651,10 @@ Python-side propagation model과 burn model helper가 들어 있다. MATLAB full
 ### `J2PolarHohmannShooting.py`
 
 Phase 1 parameter optimization과 MATLAB JSON export를 담당한다. Optimization variable은 `phase_angle_deg`, `delta_v_m_s`, `gamma_deg`이며, 결과는 `configs/latest_python_solution.json`과 `configs/python_runs/<case_id>.json`에 저장되고 `configs/python_solution_index.json`에 등록된다.
+
+### `DragDeorbitDesigner.py`
+
+Orbital drag가 켜진 `HOHMANN` Phase 3에서 사용할 single-retrograde-burn deorbit design을 계산한다. Impulsive 또는 finite-duration burn JSON을 자동 저장할 수 있으며, 결과는 `configs/latest_drag_deorbit_solution.json`, `configs/drag_deorbit_runs/<case_id>.json`, `configs/drag_deorbit_solution_index.json`에 저장된다.
 
 ### `configs/python_solution_index.json`
 
@@ -653,7 +676,7 @@ Python optimization 결과 archive의 lookup table이다. MATLAB은 명시적인
 ## 12. 현재 limitation
 
 - Re-entry `Cd`는 constant assumption이다.
-- L/D curve는 PPT image를 바탕으로 한 approximate digitization이다.
+- L/D curve는 외부 제공 데이터를 바탕으로 한 approximate value이다.
 - Full ECEF dynamics / Earth orientation model은 없다.
 - Atmosphere는 ISA76-style이며, space weather / density variability는 없다.
 - Plasma blackout은 모델링하지 않았다.
@@ -666,19 +689,16 @@ Python optimization 결과 archive의 lookup table이다. MATLAB은 명시적인
 
 현재 코드는 mission-level rendezvous-to-entry simulator로서 구조가 꽤 명확해졌다. Python은 Phase 1 parameter search, JSON export, run archive/index 관리를 담당하고, MATLAB은 mission propagation과 visualization을 담당한다. Active MATLAB path에서는 방치된 Lambert option과 legacy Phase 3 block을 제거했고, finite burn / atmospheric drag / re-entry / LOS diagnostic이 같은 workflow 안에서 동작한다.
 
-다음 단계로 가장 추천하는 개선은 세 가지이다.
+다음 단계로 가장 추천하는 개선은 네 가지이다.
 
 1. **Re-entry aerodynamic database 강화**
-   현재 PPT 기반 L/D와 constant Cd를 사용하고 있으므로, AoA-Mach-altitude별 `Cd`, `Cl`, `Cm` table이 있으면 trajectory와 heat/g-load prediction이 훨씬 설득력 있어진다.
+   현재 외부 제공 L/D trend와 constant Cd를 사용하고 있으므로, AoA-Mach-altitude별 `Cd`, `Cl`, `Cm` table이 있으면 trajectory와 heat/g-load prediction이 훨씬 설득력 있어진다.
 
 2. **Communication blackout model 추가**
    지금 LOS는 geometry-only이다. Blackout-free communication을 목표로 한다면 plasma frequency, electron density correlation, RF frequency, link margin을 추가해야 한다.
 
 3. **Regression test / batch runner 추가**
    기능이 많아졌으므로, 대표 scenario를 자동으로 돌려 Phase 1 miss, Phase 3 FPA, Phase 4 max heat flux, LOS maintained 여부를 저장하는 batch regression script가 필요하다.
-
-4. **Chamber heat load budget 및 correction burn phase 추가**
-   현재 연소 Chamber heat load budget은 설정되어있지 않지만 overheat 될 경우 `MULTI_HOHMANN` 모드를 활용할 수 있도록 구현되어있다. 실제 mission을 모사하기 위해서는 매 Maneuver마다 생긴 오차를 보정해주는 Correction burn phase를 추가해야 한다.
 
 4. **Chamber heat load budget 및 correction burn phase 추가**
    현재 연소 Chamber heat load budget은 설정되어있지 않지만 overheat 될 경우 `MULTI_HOHMANN` 모드를 활용할 수 있도록 구현되어있다. 실제 mission을 모사하기 위해서는 매 Maneuver마다 생긴 오차를 보정해주는 Correction burn phase를 추가해야 한다.
@@ -693,4 +713,4 @@ Python optimization 결과 archive의 lookup table이다. MATLAB은 명시적인
 4. W. H. Clohessy and R. S. Wiltshire, [Terminal Guidance System for Satellite Rendezvous](https://arc.aiaa.org/doi/10.2514/8.8704), Journal of the Aerospace Sciences, 1960.
 5. D. A. Vallado, *Fundamentals of Astrodynamics and Applications*, Microcosm Press, 4th ed.
 6. R. R. Bate, D. D. Mueller, and J. E. White, *Fundamentals of Astrodynamics*, Dover Publications.
-7. 사용자 제공 자료, `4가지 최적 형상 및 형상에 대한 LD 그래프.pptx`, re-entry vehicle geometry and L/D trend source.
+7. Externally provided re-entry vehicle geometry and L/D trend data.

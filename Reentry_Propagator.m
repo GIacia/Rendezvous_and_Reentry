@@ -1,5 +1,5 @@
 function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X_entry0, X_chaser_orbit0, phase3_elapsed_s, params)
-    % Atmospheric re-entry propagation from the 120 km entry interface.
+    % Atmospheric re-entry propagation from the configured entry interface.
     %
     % The translational state remains ECI, but aerodynamic velocity is
     % computed relative to a co-rotating atmosphere. This gives the ECEF
@@ -78,6 +78,7 @@ function hist = init_reentry_hist_local()
     hist.altitude = [];
     hist.speed = [];
     hist.speed_rel = [];
+    hist.fpa_deg = [];
     hist.rho = [];
     hist.mach = [];
     hist.dynamic_pressure = [];
@@ -85,6 +86,7 @@ function hist = init_reentry_hist_local()
     hist.heat_load = [];
     hist.g_load = [];
     hist.aoa_deg = [];
+    hist.bank_angle_deg = [];
     hist.ld = [];
     hist.los_clear = [];
     hist.los_clearance = [];
@@ -104,6 +106,7 @@ function [hist, aux] = log_reentry_state_local(hist, X_rv, X_chaser, t, heat_loa
     hist.altitude = [hist.altitude, norm(X_rv(1:3)) - sys.Re];
     hist.speed = [hist.speed, norm(X_rv(4:6))];
     hist.speed_rel = [hist.speed_rel, aux.speed_rel];
+    hist.fpa_deg = [hist.fpa_deg, aux.fpa_deg];
     hist.rho = [hist.rho, aux.rho];
     hist.mach = [hist.mach, aux.mach];
     hist.dynamic_pressure = [hist.dynamic_pressure, aux.dynamic_pressure];
@@ -111,6 +114,7 @@ function [hist, aux] = log_reentry_state_local(hist, X_rv, X_chaser, t, heat_loa
     hist.heat_load = [hist.heat_load, heat_load];
     hist.g_load = [hist.g_load, aux.g_load];
     hist.aoa_deg = [hist.aoa_deg, aoa_deg];
+    hist.bank_angle_deg = [hist.bank_angle_deg, bank_angle_deg];
     hist.ld = [hist.ld, aux.ld];
     hist.los_clear = [hist.los_clear, los_clear];
     hist.los_clearance = [hist.los_clearance, los_clearance];
@@ -123,6 +127,10 @@ function summary = summarize_reentry_local(hist, shape, terminal_altitude)
     summary.duration_s = hist.time(end);
     summary.terminal_altitude_m = terminal_altitude;
     summary.final_altitude_m = hist.altitude(end);
+    summary.initial_fpa_deg = hist.fpa_deg(1);
+    summary.final_fpa_deg = hist.fpa_deg(end);
+    summary.aoa_deg = hist.aoa_deg(1);
+    summary.bank_angle_deg = hist.bank_angle_deg(1);
     summary.max_heat_flux_W_m2 = max(hist.heat_flux);
     summary.total_heat_load_J_m2 = hist.heat_load(end);
     summary.max_dynamic_pressure_Pa = max(hist.dynamic_pressure);
@@ -198,6 +206,7 @@ function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_en
     aux = struct();
     aux.rho = rho;
     aux.speed_rel = speed_rel;
+    aux.fpa_deg = flight_path_angle_deg_local(r, v);
     aux.mach = speed_rel / max(a_sound, eps);
     aux.dynamic_pressure = dynamic_pressure;
     aux.heat_flux = heat_flux;
@@ -207,6 +216,13 @@ function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_en
     aux.a_aero = a_aero;
     aux.a_drag = a_drag;
     aux.a_lift = a_lift;
+end
+
+function fpa_deg = flight_path_angle_deg_local(r, v)
+    r_hat = r / norm(r);
+    v_radial = dot(v, r_hat);
+    v_horizontal = norm(v - v_radial * r_hat);
+    fpa_deg = rad2deg(atan2(v_radial, v_horizontal));
 end
 
 function a = gravity_j2_local(r, sys)
