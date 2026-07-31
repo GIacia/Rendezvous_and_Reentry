@@ -38,24 +38,45 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
     hist = init_reentry_hist_local();
     elapsed = 0;
     heat_load = 0;
+    integration_steps = 0;
+    termination_reason = "MAX_TIME";
     [hist, aux_prev] = log_reentry_state_local(hist, X_rv, X_chaser, elapsed, heat_load, sys, shape, ...
                                                aoa_deg, bank_angle_deg, lift_enabled, los_margin_altitude, heat_k);
 
     while elapsed < max_time - 1e-12
         altitude = norm(X_rv(1:3)) - sys.Re;
         if altitude <= terminal_altitude
+            termination_reason = "TERMINAL_ALTITUDE";
             break;
         end
 
         dt_eff = min(dt, max_time - elapsed);
-        X_rv = rk4_reentry_step_local(X_rv, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, dt_eff);
-        X_chaser = rk4_chaser_step_local(X_chaser, sys, dt_eff, phase3_elapsed_s + elapsed);
-        elapsed = elapsed + dt_eff;
+        X_rv_prev = X_rv;
+        X_rv_trial = rk4_reentry_step_local(X_rv_prev, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, dt_eff);
+        altitude_trial = norm(X_rv_trial(1:3)) - sys.Re;
+
+        if altitude_trial <= terminal_altitude
+            [X_rv, dt_advance] = refine_reentry_altitude_crossing_local( ...
+                X_rv_prev, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, ...
+                terminal_altitude, dt_eff);
+            termination_reason = "TERMINAL_ALTITUDE";
+        else
+            X_rv = X_rv_trial;
+            dt_advance = dt_eff;
+        end
+
+        X_chaser = rk4_chaser_step_local(X_chaser, sys, dt_advance, phase3_elapsed_s + elapsed);
+        elapsed = elapsed + dt_advance;
+        integration_steps = integration_steps + 1;
 
         aux_now = reentry_aux_local(X_rv, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
-        heat_load = heat_load + 0.5 * (aux_prev.heat_flux + aux_now.heat_flux) * dt_eff;
+        heat_load = heat_load + 0.5 * (aux_prev.heat_flux + aux_now.heat_flux) * dt_advance;
         [hist, aux_prev] = log_reentry_state_local(hist, X_rv, X_chaser, elapsed, heat_load, sys, shape, ...
                                                    aoa_deg, bank_angle_deg, lift_enabled, los_margin_altitude, heat_k);
+
+        if termination_reason == "TERMINAL_ALTITUDE"
+            break;
+        end
     end
 
     X_rv_final = zeros(14,1);
@@ -65,7 +86,7 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
     X_rv_final(14) = X_rv(7);
     X_chaser_final = X_chaser;
 
-    summary = summarize_reentry_local(hist, shape, terminal_altitude);
+    summary = summarize_reentry_local(hist, shape, terminal_altitude, termination_reason, integration_steps);
 end
 
 function hist = init_reentry_hist_local()
@@ -79,6 +100,7 @@ function hist = init_reentry_hist_local()
     hist.speed = [];
     hist.speed_rel = [];
     hist.fpa_deg = [];
+    hist.fpa_rel_deg = [];
     hist.rho = [];
     hist.mach = [];
     hist.dynamic_pressure = [];
@@ -95,18 +117,29 @@ end
 
 function [hist, aux] = log_reentry_state_local(hist, X_rv, X_chaser, t, heat_load, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, los_margin_altitude, heat_k)
     aux = reentry_aux_local(X_rv, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
-    [los_clear, los_clearance, los_elevation_deg] = line_of_sight_geometry_local(X_chaser(1:3), X_rv(1:3), sys, los_margin_altitude);
+    if isempty(X_chaser) || numel(X_chaser) < 6
+        los_clear = NaN;
+        los_clearance = NaN;
+        los_elevation_deg = NaN;
+        chaser_pos = nan(3,1);
+        chaser_vel = nan(3,1);
+    else
+        [los_clear, los_clearance, los_elevation_deg] = line_of_sight_geometry_local(X_chaser(1:3), X_rv(1:3), sys, los_margin_altitude);
+        chaser_pos = X_chaser(1:3);
+        chaser_vel = X_chaser(4:6);
+    end
 
     hist.time = [hist.time, t];
     hist.rv_pos = [hist.rv_pos, X_rv(1:3)];
     hist.rv_vel = [hist.rv_vel, X_rv(4:6)];
-    hist.chaser_pos = [hist.chaser_pos, X_chaser(1:3)];
-    hist.chaser_vel = [hist.chaser_vel, X_chaser(4:6)];
+    hist.chaser_pos = [hist.chaser_pos, chaser_pos];
+    hist.chaser_vel = [hist.chaser_vel, chaser_vel];
     hist.mass = [hist.mass, X_rv(7)];
     hist.altitude = [hist.altitude, norm(X_rv(1:3)) - sys.Re];
     hist.speed = [hist.speed, norm(X_rv(4:6))];
     hist.speed_rel = [hist.speed_rel, aux.speed_rel];
     hist.fpa_deg = [hist.fpa_deg, aux.fpa_deg];
+    hist.fpa_rel_deg = [hist.fpa_rel_deg, aux.fpa_rel_deg];
     hist.rho = [hist.rho, aux.rho];
     hist.mach = [hist.mach, aux.mach];
     hist.dynamic_pressure = [hist.dynamic_pressure, aux.dynamic_pressure];
@@ -121,30 +154,79 @@ function [hist, aux] = log_reentry_state_local(hist, X_rv, X_chaser, t, heat_loa
     hist.los_elevation_deg = [hist.los_elevation_deg, los_elevation_deg];
 end
 
-function summary = summarize_reentry_local(hist, shape, terminal_altitude)
+function summary = summarize_reentry_local(hist, shape, terminal_altitude, termination_reason, integration_steps)
     summary = struct();
     summary.shape_name = string(shape.name);
     summary.duration_s = hist.time(end);
+    summary.termination_reason = string(termination_reason);
+    summary.reached_terminal_altitude = termination_reason == "TERMINAL_ALTITUDE";
+    summary.integration_steps = integration_steps;
     summary.terminal_altitude_m = terminal_altitude;
     summary.final_altitude_m = hist.altitude(end);
+    summary.minimum_altitude_m = min(hist.altitude);
+    summary.terminal_altitude_error_m = hist.altitude(end) - terminal_altitude;
+    summary.ascending_at_termination = dot(hist.rv_vel(:,end), hist.rv_pos(:,end)) > 0;
     summary.initial_fpa_deg = hist.fpa_deg(1);
     summary.final_fpa_deg = hist.fpa_deg(end);
+    summary.initial_fpa_rel_deg = hist.fpa_rel_deg(1);
+    summary.final_fpa_rel_deg = hist.fpa_rel_deg(end);
     summary.aoa_deg = hist.aoa_deg(1);
     summary.bank_angle_deg = hist.bank_angle_deg(1);
     summary.max_heat_flux_W_m2 = max(hist.heat_flux);
     summary.total_heat_load_J_m2 = hist.heat_load(end);
     summary.max_dynamic_pressure_Pa = max(hist.dynamic_pressure);
     summary.max_g_load = max(hist.g_load);
-    summary.los_maintained = all(hist.los_clear);
-    summary.min_los_clearance_m = min(hist.los_clearance);
-    summary.min_los_elevation_deg = min(hist.los_elevation_deg);
+    valid_los = isfinite(hist.los_clear);
+    summary.los_evaluated = any(valid_los);
+    if summary.los_evaluated
+        summary.los_maintained = all(hist.los_clear(valid_los) ~= 0);
+        summary.min_los_clearance_m = min(hist.los_clearance(valid_los));
+        summary.min_los_elevation_deg = min(hist.los_elevation_deg(valid_los));
+    else
+        summary.los_maintained = NaN;
+        summary.min_los_clearance_m = NaN;
+        summary.min_los_elevation_deg = NaN;
+    end
 
-    loss_idx = find(~hist.los_clear, 1, 'first');
+    loss_idx = find(valid_los & hist.los_clear == 0, 1, 'first');
     if isempty(loss_idx)
         summary.first_los_loss_time_s = NaN;
     else
         summary.first_los_loss_time_s = hist.time(loss_idx);
     end
+
+    cd = get_shape_field_local(shape, 'cd', 1.2);
+    area = get_shape_field_local(shape, 'reference_area_m2', 1.0);
+    summary.initial_mass_kg = hist.mass(1);
+    summary.ballistic_coefficient_kg_m2 = hist.mass(1) / (cd * area);
+    summary.aerodynamic_model = "CONSTANT_CD_WITH_AOA_ONLY_LD";
+    summary.attitude_guidance_model = "CONSTANT_AOA_AND_BANK";
+    summary.heating_model = "SUTTON_GRAVES_CONVECTIVE_STAGNATION_POINT";
+end
+
+function [X_cross, t_cross] = refine_reentry_altitude_crossing_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, target_altitude, dt_window)
+    lo = 0;
+    hi = dt_window;
+    X_cross = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, hi);
+
+    for iter = 1:50
+        mid = 0.5 * (lo + hi);
+        X_mid = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, mid);
+        altitude_mid = norm(X_mid(1:3)) - sys.Re;
+
+        if altitude_mid > target_altitude
+            lo = mid;
+        else
+            hi = mid;
+            X_cross = X_mid;
+        end
+
+        if hi - lo <= 1e-7
+            break;
+        end
+    end
+
+    t_cross = hi;
 end
 
 function X_next = rk4_reentry_step_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, dt)
@@ -170,8 +252,17 @@ function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_en
     atmosphere_opts = get_atmosphere_opts_local(sys);
     [rho, ~, ~, a_sound] = Standard_Atmosphere_Density(altitude, atmosphere_opts);
 
-    omega = get_atmos_field_local(atmosphere_opts, 'earth_rotation_rad_s', 7.2921159e-5);
-    v_atm = cross([0;0;omega], r);
+    if get_bool_param_local(atmosphere_opts, 'co_rotate_atmosphere', true)
+        omega = get_atmos_field_local(atmosphere_opts, 'earth_rotation_rad_s', 7.2921159e-5);
+        if isscalar(omega)
+            omega_vec = [0;0;omega];
+        else
+            omega_vec = omega(:);
+        end
+        v_atm = cross(omega_vec, r);
+    else
+        v_atm = zeros(3,1);
+    end
     v_rel = v - v_atm;
     speed_rel = norm(v_rel);
 
@@ -207,6 +298,7 @@ function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_en
     aux.rho = rho;
     aux.speed_rel = speed_rel;
     aux.fpa_deg = flight_path_angle_deg_local(r, v);
+    aux.fpa_rel_deg = flight_path_angle_deg_local(r, v_rel);
     aux.mach = speed_rel / max(a_sound, eps);
     aux.dynamic_pressure = dynamic_pressure;
     aux.heat_flux = heat_flux;
@@ -292,6 +384,11 @@ function X = propagate_orbit_chaser_local(X, sys, duration, dt, t0)
 end
 
 function X_next = rk4_chaser_step_local(X, sys, dt, t_abs)
+    if isempty(X) || dt <= 0
+        X_next = X;
+        return;
+    end
+
     k1 = Env_EOM(t_abs,          X,             [0;0;0], [0;0;0], sys, true, "chaser");
     k2 = Env_EOM(t_abs + dt/2,   X + k1*dt/2,   [0;0;0], [0;0;0], sys, true, "chaser");
     k3 = Env_EOM(t_abs + dt/2,   X + k2*dt/2,   [0;0;0], [0;0;0], sys, true, "chaser");

@@ -649,13 +649,13 @@ def main():
     parser.add_argument("--entry-interface-altitude-km", type=float, default=120.0)
     parser.add_argument("--flight-path-angle-deg", type=float, default=4.0)
     parser.add_argument("--start-argument-deg", type=float, default=0.0)
-    parser.add_argument("--burn-model", default="finite_burn",
+    parser.add_argument("--burn-model", default="impulsive",
                         help="'impulsive' applies an instantaneous velocity decrement. "
-                             "'finite_burn' and 'continuous' integrate a finite-duration burn.")
+                             "'finite_burn' and 'continuous' integrate an optional finite-duration burn.")
     parser.add_argument("--burn-steering", default="velocity_retrograde",
                         help="Finite-burn steering law: 'velocity_retrograde' or 'fixed_initial_retrograde'.")
     parser.add_argument("--finite-burn-thrust-n", "--finite-burn-thrust-N",
-                        dest="finite_burn_thrust_N", type=float, default=3000.0)
+                        dest="finite_burn_thrust_N", type=float, default=300.0)
     parser.add_argument("--finite-burn-isp-s", dest="finite_burn_isp_s", type=float, default=200.0)
     parser.add_argument("--finite-burn-dt-s", dest="finite_burn_dt_s", type=float, default=1.0,
                         help="MATLAB RK4 execution step saved to JSON for finite deorbit burns.")
@@ -663,14 +663,14 @@ def main():
                         help="Python solve_ivp max step during the finite burn.")
     parser.add_argument("--delta-v-m-s", type=float, default=None)
     parser.add_argument("--min-delta-v-m-s", type=float, default=40.0)
-    parser.add_argument("--max-delta-v-m-s", type=float, default=500.0)
-    parser.add_argument("--delta-v-tol-m-s", type=float, default=0.1)
-    parser.add_argument("--search-samples", type=int, default=25)
+    parser.add_argument("--max-delta-v-m-s", type=float, default=320.0)
+    parser.add_argument("--delta-v-tol-m-s", type=float, default=0.05)
+    parser.add_argument("--search-samples", type=int, default=57)
     parser.add_argument("--rule-of-thumb-delta-v-m-s", type=float, default=100.0)
     parser.add_argument("--max-coast-time-s", type=float, default=6 * 3600.0)
-    parser.add_argument("--max-step-s", type=float, default=20.0)
-    parser.add_argument("--rtol", type=float, default=1e-8)
-    parser.add_argument("--atol", type=float, default=1e-10)
+    parser.add_argument("--max-step-s", type=float, default=10.0)
+    parser.add_argument("--rtol", type=float, default=1e-9)
+    parser.add_argument("--atol", type=float, default=1e-11)
     parser.add_argument("--chaser-mass-kg", type=float, default=2000.0)
     parser.add_argument("--target-mass-kg", type=float, default=2000.0)
     parser.add_argument("--chaser-cd", type=float, default=2.2)

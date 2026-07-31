@@ -775,7 +775,7 @@ def target_chaser_ode_j2_finite_burn(
     environment_config=None
 ):
     """
-    Combined target/chaser propagation with a finite high-thrust burn.
+    Combined target/chaser propagation with a finite-duration burn.
 
     y =
     [
@@ -1086,7 +1086,7 @@ def run_j2_polar_hohmann_rendezvous(
 
     burn_model:
         "impulsive" for instantaneous delta-V, or "finite_burn" to spread
-        the same delta-V direction over a short high-thrust burn using
+        the same delta-V direction over a finite-duration burn using
         thrust_N, isp_s, and initial_mass_kg.
 
     angle_unit:

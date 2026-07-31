@@ -6,6 +6,7 @@
       "latest_alias_path": "latest_drag_deorbit_solution.json",
       "path": "drag_deorbit_runs/drag_deorbit_h500.0_ei120.0_fpa4.0_8e03cc77_522f27e3_20260724_040012Z.json",
       "phase3": {
+        "burn_model": "IMPULSIVE",
         "drag_deorbit_delta_v_m_s": 274.955631,
         "entry_interface_altitude_km": 120.0,
         "flight_path_angle_deg": 4.0,
@@ -26,6 +27,7 @@
       "latest_alias_path": "latest_drag_deorbit_solution.json",
       "path": "drag_deorbit_runs/drag_deorbit_h500.0_ei120.0_fpa4.0_93cccf1b_a5158610_20260724_041008Z.json",
       "phase3": {
+        "burn_model": "IMPULSIVE",
         "drag_deorbit_delta_v_m_s": 274.955631,
         "entry_interface_altitude_km": 120.0,
         "flight_path_angle_deg": 4.0,
@@ -39,125 +41,10 @@
         "start_argument_deg": 0.0
       },
       "settings_hash": "93cccf1bdca2ac86"
-    },
-    {
-      "case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_4f4adc2c_6af40225_20260724_044645Z",
-      "created_at": "2026-07-24T04:46:45Z",
-      "latest_alias_path": "latest_drag_deorbit_solution.json",
-      "path": "drag_deorbit_runs/drag_deorbit_h500.0_ei120.0_fpa4.0_4f4adc2c_6af40225_20260724_044645Z.json",
-      "phase3": {
-        "burn_model": "FINITE_BURN",
-        "burn_steering": "velocity_retrograde",
-        "drag_deorbit_delta_v_m_s": 353.653542,
-        "entry_interface_altitude_km": 120.0,
-        "flight_path_angle_deg": 4.0,
-        "mode": "HOHMANN",
-        "predicted_burn_duration_s": 2157.3491364442953,
-        "predicted_coast_time_s": 0.0,
-        "predicted_entry_fpa_deg": -3.507696432044395
-      },
-      "result_hash": "6af4022574f2b538",
-      "scenario": {
-        "h_start_km": 500.0,
-        "start_argument_deg": 0.0
-      },
-      "settings_hash": "4f4adc2c8cae10df"
-    },
-    {
-      "case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_e72b53a9_6c8a2267_20260724_044740Z",
-      "created_at": "2026-07-24T04:47:40Z",
-      "latest_alias_path": "latest_drag_deorbit_solution.json",
-      "path": "drag_deorbit_runs/drag_deorbit_h500.0_ei120.0_fpa4.0_e72b53a9_6c8a2267_20260724_044740Z.json",
-      "phase3": {
-        "burn_model": "FINITE_BURN",
-        "burn_steering": "velocity_retrograde",
-        "drag_deorbit_delta_v_m_s": 352.550573,
-        "entry_interface_altitude_km": 120.0,
-        "flight_path_angle_deg": 4.0,
-        "mode": "HOHMANN",
-        "predicted_burn_duration_s": 2151.2074849049663,
-        "predicted_coast_time_s": 0.0,
-        "predicted_entry_fpa_deg": -3.5076964317210275
-      },
-      "result_hash": "6c8a2267c8496c7c",
-      "scenario": {
-        "h_start_km": 500.0,
-        "start_argument_deg": 0.0
-      },
-      "settings_hash": "e72b53a9e59e1c34"
-    },
-    {
-      "case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_d2964d0a_ff602442_20260724_044749Z",
-      "created_at": "2026-07-24T04:47:49Z",
-      "latest_alias_path": "tmp_fixed_initial_drag_deorbit_solution.json",
-      "path": "drag_deorbit_runs/drag_deorbit_h500.0_ei120.0_fpa4.0_d2964d0a_ff602442_20260724_044749Z.json",
-      "phase3": {
-        "burn_model": "FINITE_BURN",
-        "burn_steering": "fixed_initial_retrograde",
-        "drag_deorbit_delta_v_m_s": 359.623002,
-        "entry_interface_altitude_km": 120.0,
-        "flight_path_angle_deg": 4.0,
-        "mode": "HOHMANN",
-        "predicted_burn_duration_s": 2190.5289587023585,
-        "predicted_coast_time_s": 0.0,
-        "predicted_entry_fpa_deg": -2.729770271225837
-      },
-      "result_hash": "ff60244253f49fdb",
-      "scenario": {
-        "h_start_km": 500.0,
-        "start_argument_deg": 0.0
-      },
-      "settings_hash": "d2964d0a5a8902a4"
-    },
-    {
-      "case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_65ce78e0_4aca8e83_20260724_044751Z",
-      "created_at": "2026-07-24T04:47:51Z",
-      "latest_alias_path": "tmp_3000N_drag_deorbit_solution.json",
-      "path": "drag_deorbit_runs/drag_deorbit_h500.0_ei120.0_fpa4.0_65ce78e0_4aca8e83_20260724_044751Z.json",
-      "phase3": {
-        "burn_model": "FINITE_BURN",
-        "burn_steering": "velocity_retrograde",
-        "drag_deorbit_delta_v_m_s": 275.908233,
-        "entry_interface_altitude_km": 120.0,
-        "flight_path_angle_deg": 4.0,
-        "mode": "HOHMANN",
-        "predicted_burn_duration_s": 171.58703011937655,
-        "predicted_coast_time_s": 1114.6414602362222,
-        "predicted_entry_fpa_deg": -4.000011803089681
-      },
-      "result_hash": "4aca8e835fe55341",
-      "scenario": {
-        "h_start_km": 500.0,
-        "start_argument_deg": 0.0
-      },
-      "settings_hash": "65ce78e03254d6fd"
-    },
-    {
-      "case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_65ce78e0_4aca8e83_20260724_044850Z",
-      "created_at": "2026-07-24T04:48:50Z",
-      "latest_alias_path": "latest_drag_deorbit_solution.json",
-      "path": "drag_deorbit_runs/drag_deorbit_h500.0_ei120.0_fpa4.0_65ce78e0_4aca8e83_20260724_044850Z.json",
-      "phase3": {
-        "burn_model": "FINITE_BURN",
-        "burn_steering": "velocity_retrograde",
-        "drag_deorbit_delta_v_m_s": 275.908233,
-        "entry_interface_altitude_km": 120.0,
-        "flight_path_angle_deg": 4.0,
-        "mode": "HOHMANN",
-        "predicted_burn_duration_s": 171.58703011937655,
-        "predicted_coast_time_s": 1114.6414602362222,
-        "predicted_entry_fpa_deg": -4.000011803089681
-      },
-      "result_hash": "4aca8e835fe55341",
-      "scenario": {
-        "h_start_km": 500.0,
-        "start_argument_deg": 0.0
-      },
-      "settings_hash": "65ce78e03254d6fd"
     }
   ],
-  "latest_case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_65ce78e0_4aca8e83_20260724_044850Z",
+  "latest_case_id": "drag_deorbit_h500.0_ei120.0_fpa4.0_93cccf1b_a5158610_20260724_041008Z",
   "schema_version": 1,
   "source": "DragDeorbitDesigner.py",
-  "updated_at": "2026-07-24T04:48:50Z"
+  "updated_at": "2026-07-24T04:10:08Z"
 }

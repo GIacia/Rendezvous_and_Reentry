@@ -18,8 +18,7 @@ This repository currently models:
 - A target spacecraft and a chaser spacecraft
 - Hohmann-based phase planning with target co-propagation
 - A J2-aware wait-time search before departure so the transfer arrives closer to a desired LVLH capture point
-- Multi-Hohmann phasing option for splitting large maneuvers across multiple thermally limited burns
-- Custom phased maneuver logic driven by externally tuned phase angle, delta-V, and gamma parameters, with selectable impulsive or finite-burn execution
+- Custom phased maneuver logic driven by externally tuned phase angle, delta-V, and gamma parameters, with impulsive execution by default and finite-burn execution kept as an explicit study option
 - LVLH waypoint-impulse proximity operations with cleanup, hold trims, cycloidal drift, R-bar hops, braking impulses, and mass depletion
 - selectable Phase 3 re-entry logic through `Mission_Run_Config.m`
 - Simple thrust uncertainty / noise injection in selected phasing modes
@@ -33,7 +32,7 @@ This repository currently models:
 |-- Main_Mission_Simulator.m      % Main entry point for the full mission
 |-- Mission_Config.m              % Physical constants, vehicle data, mission parameters
 |-- Mission_Run_Config.m          % User-facing run control panel
-|-- Phasing_Propagator.m          % 3-DOF phasing, Hohmann, Multi-Hohmann, custom impulse logic
+|-- Phasing_Propagator.m          % 3-DOF phasing, Hohmann, custom impulse logic, preliminary Multi-Hohmann branch
 |-- Env_EOM.m                     % Environment and 3-DOF/6-DOF equations of motion
 |-- Atmospheric_Drag_Acceleration.m % Shared MATLAB atmospheric-drag model
 |-- Standard_Atmosphere_Density.m % Shared ISA76-style atmosphere helper
@@ -83,7 +82,7 @@ Common examples:
 
 ```matlab
 % In Mission_Run_Config.m
-run.maneuver.burn_model = "FINITE_BURN";
+run.maneuver.burn_model = "IMPULSIVE";
 run.phase3.mode = "R_BAR_200_FPA";
 run.phase3.parking_altitude_km = 200;
 run.phase3.flight_path_angle_deg = 4;
@@ -147,20 +146,20 @@ run.phase3.drag_deorbit_design.mode = "AUTO";
 run.phase3.drag_deorbit_design.file = "configs/latest_drag_deorbit_solution.json";
 ```
 
-By default this design helper writes a finite-duration, velocity-retrograde
-deorbit burn (`--burn-model finite_burn`, `--finite-burn-thrust-n 3000`)
+By default this design helper writes an impulsive retrograde deorbit design
 followed by J2 + atmospheric-drag propagation to the configured entry
-interface. `--burn-model impulsive` preserves the older instantaneous velocity
-decrement. `--burn-model continuous` is accepted as an alias for this finite
-burn model; it is not a full low-thrust trajectory optimizer.
+interface. `--burn-model finite_burn` remains available only as an explicit
+experiment; it is not the recommended default and is not a full low-thrust
+trajectory optimizer. `--burn-model continuous` is accepted only as an alias
+for that finite-burn experiment.
 
 The common "about 100 m/s from LEO" rule of thumb is valid for lower start
 altitudes and shallower entry-interface angles, but it is not universal. For
-the repository's current 500 km / 120 km / 4 deg default, the generated design
-is about 276 m/s; the same JSON records whether a 100 m/s check reaches the
-interface. If you force a low thrust such as `--finite-burn-thrust-n 300`, the
-burn can last long enough that the vehicle reaches the interface before the
-commanded burn completes, and the 4 deg FPA constraint may no longer be met.
+the repository's current 500 km / 120 km / 4 deg default, the generated
+impulsive design is about 275 m/s; the same JSON records whether a 100 m/s
+check reaches the interface. A low-thrust finite burn such as 300 N can last
+long enough that the vehicle reaches the interface before the commanded burn
+completes, so it is not used as the default deorbit method.
 
 Then load that exact latest config by setting the run control file:
 
@@ -234,9 +233,10 @@ The active root script currently uses `CUSTOM_IMPULSE` mode by default, where
 the departure phase angle, burn magnitude, and burn flight-path tilt are supplied
 through the selected Python optimizer JSON or through `Mission_Run_Config.m`.
 The maneuver execution model is selected with `run.maneuver.burn_model`:
-`"IMPULSIVE"` preserves the legacy instantaneous delta-V behavior, while
-`"FINITE_BURN"` applies the same delta-V direction over a short high-thrust burn
-using the configured thrust, Isp, and mass depletion.
+`"IMPULSIVE"` is the default instantaneous delta-V model. `"FINITE_BURN"`
+applies the same delta-V direction over a finite-duration firing using the
+configured thrust, Isp, and mass depletion, but it should be selected
+explicitly for finite-burn sensitivity studies.
 
 In `HOHMANN` mode, the logic is:
 
@@ -280,9 +280,10 @@ drag-aware single-retrograde-burn design loaded from
 `run.phase3.drag_deorbit_design.mode = "OFF"` to force the older dragless conic
 calculation even with orbital drag enabled.
 
-For finite-burn deorbit JSONs, MATLAB recomputes burn duration and propellant
-from the actual Phase 3 mass after rendezvous/proximity operations. The Python
-design mass is still recorded in the JSON for traceability.
+For explicitly generated finite-burn deorbit JSONs, MATLAB recomputes burn
+duration and propellant from the actual Phase 3 mass after
+rendezvous/proximity operations. The Python design mass is still recorded in
+the JSON for traceability.
 
 ### Phase 4: Atmospheric Entry
 
@@ -327,7 +328,6 @@ Contains mission constants and tuning parameters such as:
 Handles impulsive orbital transfer logic for:
 
 - Hohmann transfer
-- Multi-Hohmann transfer
 - custom impulse phase targeting
 - target co-propagation
 - history logging of chaser/target states

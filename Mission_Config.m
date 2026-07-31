@@ -27,16 +27,16 @@ function sys = Mission_Config()
 
     % Propulsion model.
     sys.Isp = 200;             % Specific impulse [s]
-    sys.Thrust_Impulsive = 300;% High-thrust finite-burn engine [N]
+    sys.Thrust_Impulsive = 300;% Reference finite-burn thrust [N]
 
     % Maneuver execution options.
-    % default_burn_model: "IMPULSIVE" preserves the legacy instantaneous delta-V behavior. Use "FINITE_BURN" to spread the same delta-V vector over a short, high-thrust burn.
-    sys.maneuver.default_burn_model = "FINITE_BURN";
+    % default_burn_model: "IMPULSIVE" preserves the baseline instantaneous delta-V behavior. Use "FINITE_BURN" only for explicit finite-duration firing studies.
+    sys.maneuver.default_burn_model = "IMPULSIVE";
     sys.maneuver.direction_mode = "LOCAL_TANGENTIAL_RADIAL";
     sys.maneuver.finite_burn_thrust = sys.Thrust_Impulsive; % [N]
     sys.maneuver.finite_burn_isp = sys.Isp;                 % [s]
     sys.maneuver.finite_burn_dt = 0.1;                      % [s]
-    sys.maneuver.max_single_burn_duration = 120.0;          % [s]
+    sys.maneuver.max_single_burn_duration = inf;            % [s], disabled unless a validated thermal/engine limit is supplied
     sys.maneuver.max_single_burn_delta_v = inf;             % [m/s]
 
     % Environment model options.

@@ -54,6 +54,7 @@
   "phase3": {
     "drag_deorbit": {
       "burn_direction": "retrograde",
+      "burn_model": "IMPULSIVE",
       "delta_v_m_s": 274.955631,
       "design_method": "target_fpa_root",
       "enabled": true,

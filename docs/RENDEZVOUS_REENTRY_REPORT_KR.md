@@ -6,13 +6,13 @@
 
 현재 active code의 핵심 선택지는 다음과 같다.
 
-- Phase 1 phasing mode: `CUSTOM_IMPULSE`, `HOHMANN`, `MULTI_HOHMANN`
+- Phase 1 phasing mode: `CUSTOM_IMPULSE`, `HOHMANN` (`MULTI_HOHMANN`은 예비 기능)
 - Burn model: `IMPULSIVE`, `FINITE_BURN`
 - Orbital atmospheric drag: `OFF`, `ISA76`
 - Phase 3 re-entry setup: `HOHMANN`, `R_BAR_200_FPA`
 - Phase 4 re-entry vehicle shape: `COMPROMISE`, `HEATLOAD_MIN`, `PAYLOAD_MAX`, `TPS_MIN`
 
-짧은 시간 동안 impulsive delta-V를 실제 thrust로 분산하는 옵션을 `FINITE_BURN`으로 사용한다.
+기본 실행은 `IMPULSIVE`이며, impulsive delta-V를 실제 thrust로 분산하는 `FINITE_BURN`은 명시적인 sensitivity study 옵션으로만 남긴다.
 
 ---
 
@@ -128,9 +128,9 @@ Phase 1 finite burn은 maneuver direction을 burn 시작 시점에 고정한다.
 
 ### 4.3 Multi-Hohmann과 thermal constraint
 
-긴 burn은 chamber overheating이나 actuator thermal limit을 유발할 수 있다. `MULTI_HOHMANN` mode는 큰 altitude change를 여러 Hohmann leg로 분할한다.
+긴 burn은 chamber overheating이나 actuator thermal limit을 유발할 수 있다. 다만 현재는 검증된 thermal/engine-cycle limit이 없으므로 `MULTI_HOHMANN` mode는 기본 workflow에서 쓰지 않는 예비 기능으로 둔다.
 
-코드는 다음 조건을 만족하는 leg count를 자동으로 찾을 수 있다.
+향후 실제 thermal/engine constraint가 정의되면 다음 조건을 만족하는 leg count를 찾는 방식으로 확장할 수 있다.
 
 - maximum single-burn duration
 - maximum single-burn delta-V
@@ -412,11 +412,11 @@ Drag-on `HOHMANN` Phase 3의 deorbit burn은 별도 Python helper가 계산한�
 python DragDeorbitDesigner.py --start-altitude-km 500 --entry-interface-altitude-km 120 --flight-path-angle-deg 4 --matlab-config-out configs/latest_drag_deorbit_solution.json
 ```
 
-기본값은 `--burn-model finite_burn`, `--burn-steering velocity_retrograde`, `--finite-burn-thrust-n 3000`이다. `--burn-model impulsive`를 주면 순간 감속 해를 만들고, `--burn-model continuous`는 Phase 3 helper 안에서 finite-burn alias로 처리한다. 이것은 high-dimensional trajectory optimizer가 아니라 single retrograde burn parameter를 찾는 low-dimensional design helper이다.
+기본값은 다시 `--burn-model impulsive`이다. `--burn-model finite_burn`은 명시적으로 켠 실험 옵션으로만 남긴다. `--burn-model continuous`는 Phase 3 helper 안에서 finite-burn alias로만 처리한다. 이것은 high-dimensional trajectory optimizer가 아니라 single retrograde burn parameter를 찾는 low-dimensional design helper이다.
 
 MATLAB은 `Mission_Run_Config.m`의 `run.phase3.drag_deorbit_design.file`에서 이 JSON을 읽는다.
 
-Finite-burn JSON의 mass는 설계 기준값으로 기록된다. MATLAB은 실제 Phase 3 시작 시점의 남은 mass로 burn duration과 propellant를 다시 계산한다.
+Finite-burn JSON의 mass는 설계 기준값으로 기록된다. 단, 현재 기본 drag-aware deorbit JSON은 impulsive로 생성한다.
 
 현재 기본 run-control에서는 orbital drag를 Phase 3부터만 적용한다. 즉 Phase 1 optimizer JSON은 drag-off archive를 그대로 쓸 수 있고, drag-aware deorbit JSON은 Phase 3에서만 사용된다.
 
@@ -550,7 +550,7 @@ Main_Mission_Simulator
   },
   "phase1": {
     "mode": "CUSTOM_IMPULSE",
-    "burn_model": "FINITE_BURN",
+    "burn_model": "IMPULSIVE",
     "phase_angle_deg": 3.8,
     "delta_v_m_s": 58.0,
     "gamma_deg": 0.0
@@ -559,7 +559,7 @@ Main_Mission_Simulator
     "finite_burn_thrust_N": 300,
     "finite_burn_isp_s": 200,
     "finite_burn_dt_s": 0.1,
-    "max_single_burn_duration_s": 120
+    "max_single_burn_duration_s": null
   },
   "environment": {
     "atmospheric_drag": {
@@ -626,7 +626,7 @@ Earth constants, orbit altitude, propulsion, maneuver defaults, atmosphere, re-e
 
 ### `Phasing_Propagator.m`
 
-Phase 1 phasing / Hohmann / Multi-Hohmann / custom impulse logic을 담당한다. Active code에서 Lambert branch는 제거되었다.
+Phase 1 phasing / Hohmann / custom impulse logic을 담당한다. Multi-Hohmann branch는 예비 기능으로 남아 있으나 기본 workflow에서는 사용하지 않는다. Active code에서 Lambert branch는 제거되었다.
 
 ### `Env_EOM.m`
 
@@ -701,7 +701,7 @@ Python optimization 결과 archive의 lookup table이다. MATLAB은 명시적인
    기능이 많아졌으므로, 대표 scenario를 자동으로 돌려 Phase 1 miss, Phase 3 FPA, Phase 4 max heat flux, LOS maintained 여부를 저장하는 batch regression script가 필요하다.
 
 4. **Chamber heat load budget 및 correction burn phase 추가**
-   현재 연소 Chamber heat load budget은 설정되어있지 않지만 overheat 될 경우 `MULTI_HOHMANN` 모드를 활용할 수 있도록 구현되어있다. 실제 mission을 모사하기 위해서는 매 Maneuver마다 생긴 오차를 보정해주는 Correction burn phase를 추가해야 한다.
+   현재 연소 Chamber heat load budget은 설정되어있지 않으므로 `MULTI_HOHMANN` 모드는 검증 전까지 기본 해법으로 쓰지 않는 편이 맞다. 실제 mission을 모사하기 위해서는 먼저 engine-cycle / thermal constraint와 매 maneuver 후 오차를 보정하는 correction burn phase를 정의해야 한다.
 
 ---
 

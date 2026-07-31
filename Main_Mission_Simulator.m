@@ -59,7 +59,7 @@ custom_params.gamma_unit       = "rad"; % "rad" or "deg"
 
 % Maneuver execution model for the custom phased maneuver.
 % Use "IMPULSIVE" for the legacy instantaneous delta-V model or
-% "FINITE_BURN" to execute the same delta-V over a short high-thrust burn.
+% "FINITE_BURN" to execute the same delta-V over a finite-duration firing.
 % phase_angle, delta_v, and gamma parameters.
 custom_params.burn_model = sys.maneuver.default_burn_model;
 custom_params.burn_direction_mode = sys.maneuver.direction_mode;
@@ -69,7 +69,7 @@ custom_params.dt_burn = sys.maneuver.finite_burn_dt;                % [s]
 custom_params.max_single_burn_duration = sys.maneuver.max_single_burn_duration; % [s]
 custom_params.max_single_burn_delta_v = sys.maneuver.max_single_burn_delta_v;   % [m/s]
 custom_params.use_thrust_noise = get_run_bool_field_local(run_cfg, {'maneuver','use_thrust_noise'}, false);
-custom_params.multi_hohmann_legs = []; % [] lets MULTI_HOHMANN choose from thermal limits.
+custom_params.multi_hohmann_legs = []; % Used only when phasing_mode is explicitly MULTI_HOHMANN.
 
 % Phase 1 target relative position in the target LVLH frame [m].
 custom_params.desired_rel_lvlh = [0; -5000; 0];
@@ -85,7 +85,7 @@ custom_params.event_time_tol = 1e-3;    % [s] event refinement tolerance
 custom_params.capture_pos_tol = 0.5;    % [m] capture tolerance about desired_rel_lvlh
 custom_params.min_capture_time = 0;     % [s] raise to ignore very early local minima
 
-% Mode options: "CUSTOM_IMPULSE", "HOHMANN", "MULTI_HOHMANN"
+% Mode options: "CUSTOM_IMPULSE", "HOHMANN"; "MULTI_HOHMANN" is preliminary.
 phasing_mode = "CUSTOM_IMPULSE";
 [phasing_mode, custom_params] = apply_json_to_phase1_local(phasing_mode, custom_params, mission_cfg);
 [phasing_mode, custom_params] = apply_run_config_to_phase1_local(phasing_mode, custom_params, run_cfg);
@@ -440,11 +440,19 @@ entry_params.shape_name = sys.reentry_vehicle.selected_shape;
 Budget = [Budget; {"Phase 4: Atmospheric Entry", 0, 0, X_reentry_vehicle(14)}];
 
 fprintf('   shape: %s\n', char(reentry_atmo_info.shape_name));
-fprintf('   entry duration: %.2f s, final altitude: %.2f km\n', ...
-        reentry_atmo_info.duration_s, reentry_atmo_info.final_altitude_m/1000);
-fprintf('   AoA %.2f deg, bank %.2f deg, FPA %.3f -> %.3f deg\n', ...
-        reentry_atmo_info.aoa_deg, reentry_atmo_info.bank_angle_deg, ...
-        reentry_atmo_info.initial_fpa_deg, reentry_atmo_info.final_fpa_deg);
+    fprintf('   entry duration: %.2f s, final altitude: %.2f km, termination: %s\n', ...
+            reentry_atmo_info.duration_s, reentry_atmo_info.final_altitude_m/1000, ...
+            char(reentry_atmo_info.termination_reason));
+    if ~reentry_atmo_info.reached_terminal_altitude
+        warning('Atmospheric entry ended without reaching the terminal altitude (reason: %s, minimum altitude: %.2f km).', ...
+                char(reentry_atmo_info.termination_reason), reentry_atmo_info.minimum_altitude_m/1000);
+    end
+    fprintf('   AoA %.2f deg, bank %.2f deg, inertial FPA %.3f -> %.3f deg\n', ...
+            reentry_atmo_info.aoa_deg, reentry_atmo_info.bank_angle_deg, ...
+            reentry_atmo_info.initial_fpa_deg, reentry_atmo_info.final_fpa_deg);
+    fprintf('   atmosphere-relative FPA %.3f -> %.3f deg, beta %.3f kg/m^2\n', ...
+            reentry_atmo_info.initial_fpa_rel_deg, reentry_atmo_info.final_fpa_rel_deg, ...
+            reentry_atmo_info.ballistic_coefficient_kg_m2);
 fprintf('   max heat flux: %.3f W/cm^2, total heat load: %.3f MJ/m^2\n', ...
         reentry_atmo_info.max_heat_flux_W_m2/1e4, reentry_atmo_info.total_heat_load_J_m2/1e6);
 fprintf('   max dynamic pressure: %.3f kPa, max aero g-load: %.3f g\n', ...
@@ -966,7 +974,7 @@ function value = get_run_number_field_local(s, path, default_value)
     if ischar(value) || isstring(value)
         value = str2double(value);
     end
-    if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ~isfinite(value)
+    if isempty(value) || ~isnumeric(value) || ~isscalar(value) || isnan(value)
         value = default_value;
     end
 end
@@ -1465,7 +1473,7 @@ function value = get_json_number_local(cfg, path, default_value)
     if ischar(value) || isstring(value)
         value = str2double(value);
     end
-    if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ~isfinite(value)
+    if isempty(value) || ~isnumeric(value) || ~isscalar(value) || isnan(value)
         value = default_value;
     end
 end

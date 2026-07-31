@@ -35,8 +35,8 @@ Responsible for mission phases dominated by orbital transfer rather than close-r
 It currently supports:
 
 - impulsive Hohmann departure and circularization
-- custom phase targeting with selectable impulsive or finite-burn execution
-- Multi-Hohmann transfer splitting for burn-duration / thermal constraints
+- custom phase targeting with impulsive execution by default and finite-burn execution as an explicit study option
+- preliminary Multi-Hohmann transfer code retained for future burn-duration / thermal-constraint studies, but not part of the default workflow
 - target co-propagation during transfer
 - J2-aware wait-time scanning before departure
 - history logging for both chaser and target
