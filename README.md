@@ -91,13 +91,16 @@ run.environment.atmospheric_drag.enabled = true;
 run.environment.atmospheric_drag.apply_from_phase = "PHASE3";
 ```
 
-Paper-based atmospheric-entry modes can be selected directly:
+Paper-derived reduced-order atmospheric-entry modes can be selected directly:
 
 ```matlab
 % RLV polynomial aerodynamics, speed-scheduled AoA, and target-relay
 % antenna/path-constraint diagnostics.
 run.reentry.vehicle_mode = "SPACEPLANE";
 run.reentry.communication.antenna_mount = "AFT"; % or PAPER_TOP
+run.reentry.communication.relay_mode = "MISSION_TARGET_DYNAMIC_ORBIT";
+% Optional paper relay reference:
+% run.reentry.communication.relay_mode = "PAPER_TDRS_STATIC_EARTH_FIXED";
 % Optional only after a link-budget-derived range is available:
 run.reentry.communication.max_range_m = inf;
 
@@ -106,6 +109,7 @@ run.reentry.communication.max_range_m = inf;
 run.reentry.vehicle_mode = "CAPSULE";
 run.reentry.capsule.separation_mode = "ENTRY_INTERFACE";
 run.reentry.capsule.add_to_chaser_initial_mass = true;
+run.reentry.capsule.altitude_termination_enabled = false; % use 240 m/s event
 ```
 
 See `docs/REENTRY_PAPER_MODELS.md` for the implemented equations, paper

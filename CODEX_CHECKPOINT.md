@@ -1,143 +1,186 @@
-# Codex Checkpoint — Re-entry Paper Models
+# Codex Checkpoint — Re-entry Paper Audit and Reduced Models
 
 Date: 2026-07-31  
 Workspace: `C:\Users\user\Desktop\Rendezvous_and_Reentry`
 
-## Pause status
+## Current status
 
-- Work was paused at the user's request.
-- No MATLAB process is running (`MATLAB_PROCESSES=NONE`).
-- All sub-agents have completed; no delegated task remains active.
-- No files were staged, committed, or pushed.
-- The two source PDFs were not modified. The Git-tracked workspace copies
-  `tmp/pdfs/capsule.pdf` and `tmp/pdfs/spaceplane.pdf` were restored after
-  temporary extraction artifacts were removed.
+- The interrupted PDF reviews were restarted and completed.
+- Spaceplane paper: all 11/11 pages rendered and visually inspected; key
+  tables/figures were rechecked at high resolution.
+- Capsule paper: all 14/14 pages rendered and visually inspected; equations
+  and tables were cross-checked with text extraction.
+- Both independent paper-review agents completed. The unused architecture
+  agent was stopped before starting.
+- No MATLAB process is running.
+- Default run mode has been restored to `SPACEPLANE`.
+- Temporary page renders, extracted text, and `.mat` sensitivity artifacts
+  were deleted. The Git-tracked source copies remain:
+  - `tmp/pdfs/spaceplane.pdf`
+  - `tmp/pdfs/capsule.pdf`
+- No file is staged or committed.
+- Current `HEAD` remains `373d237` (`Checkpoint`).
 
-## Source papers
-
-- `C:\Users\user\Desktop\IAAT\자료\Reentry\1-s2.0-S027311772501347X-main.pdf`
-  - Zhang et al., spaceplane/RLV blackout-zone communication constraint.
-- `C:\Users\user\Desktop\IAAT\자료\Reentry\1-s2.0-S0094576524008038-main.pdf`
-  - Saito et al., controlled small-capsule Earth re-entry.
-
-## Current working-tree files
+## Working tree
 
 Modified:
 
+- `CODEX_CHECKPOINT.md`
 - `Main_Mission_Simulator.m`
 - `Mission_Config.m`
 - `Mission_Run_Config.m`
 - `README.md`
 - `Reentry_Propagator.m`
+- `docs/ASSUMPTIONS_AND_LIMITATIONS.md`
+- `docs/REENTRY_PAPER_MODELS.md`
 - `validation/Validate_Reentry_Propagator.m`
 
-New/untracked:
+Untracked: none.
 
-- `docs/REENTRY_PAPER_MODELS.md`
-- `validation/Compare_Capsule_Separation_Sensitivity.m`
-- `CODEX_CHECKPOINT.md`
+## Source papers and audit conclusions
 
-## Completed implementation
+### Zhang et al. — SPACEPLANE/RLV
 
-### Vehicle-mode and mission integration
+Source: `tmp/pdfs/spaceplane.pdf`
 
-- Added selectable `SPACEPLANE` and `CAPSULE` re-entry modes.
-- Default remains `SPACEPLANE`.
-- Added a requested 60 kg capsule mode.
-- In capsule mode the default initial stack is:
-  `base chaser wet mass + 60 kg capsule`.
-- Added `add_to_chaser_initial_mass=false` for configs whose imported initial
-  mass already includes the capsule.
-- Default separation is at the 120 km Entry Interface with zero separation
-  impulse and continuous position/velocity.
-- Added entry-stack/capsule/residual-carrier mass validation and ledger.
-- Residual carrier trajectory is explicitly marked `NOT_PROPAGATED`.
-- Mission budget now distinguishes actively propagated mass from total
-  accounted mass so the carrier does not appear to vanish after separation.
-- Replaced the former duplicated chaser relay with the independently orbiting
-  Target satellite state.
+The current mode is now explicitly described as:
 
-### SPACEPLANE paper model
+> Paper-derived RLV aerodynamics and RAAP geometry in a forward propagator,
+> with either a user-requested aft antenna/dynamic mission target or an
+> optional paper-reference TDRS; no paper trajectory optimization or BZC
+> enforcement.
 
-- Implemented the paper RLV polynomial aerodynamics:
-  - `CL = -0.041065 + 0.016292*alpha + 0.0002602*alpha^2`
-  - `CD = 0.080505 - 0.03026*CL + 0.86495*CL^2`
-- Implemented the speed-scheduled AoA profile:
-  - 15 deg through 2,000 m/s
-  - linear 15→40 deg from 2,000 to 5,000 m/s
-  - 40 deg above 5,000 m/s
-- AoA is reevaluated at every RK4 substage.
-- Explicit scalar AoA override forces a constant AoA.
-- Corrected schedule endpoint handling for non-monotonic user-defined AoA
-  values by clamping speed/Mach to the independent-variable endpoints.
-- Added paper path-constraint diagnostics:
-  - dynamic pressure 20 kPa
-  - aerodynamic load 2.5 g
-  - heat flux 160 kW/m²
-  - bank magnitude 60 deg
-  - bank rate 10 deg/s
-- Implemented RAAP transformation from the half-velocity frame to body frame
-  using AoA and bank.
-- Added two antenna mounts:
-  - requested aft antenna `[-1;0;0]` (default)
-  - exact paper upper-body antenna `[0;1;0]`
-- Communication geometry now requires:
-  - RAAP inside the beam cone
-  - configured range interval
-  - no Earth occultation
-- Added prescribed-bank RAAP and instantaneous best-bank feasibility scan.
-- Added continuous or 60–80 km blackout-only constraint scope.
-- An unvisited blackout interval now reports `NOT_EVALUATED`/`NaN`, not a
-  vacuous success.
-- No attitude/bank control is silently applied; these remain diagnostics.
+Confirmed paper values:
 
-### CAPSULE paper model
+- `CL = -0.041065 + 0.016292*alpha + 0.0002602*alpha^2`
+- `CD = 0.080505 - 0.03026*CL + 0.86495*CL^2`
+- AoA: 15 deg through 2 km/s, linear to 40 deg at 5 km/s, then 40 deg
+- paper antenna: `+Y_B = [0;1;0]`
+- beam half-angle: 45 deg
+- TDRS: Earth-fixed lon/lat 77/0 deg, radius 42,164 km
+- `q <= 20 kPa`, `n <= 2.5`, `|bank| <= 60 deg`,
+  `|bank_rate| <= 10 deg/s`
+- initial altitude 80 km; terminal altitude/speed 25 km/800 m/s
+- BZC is active from the initial state until the first downward 60 km
+  crossing and remains active during short skips above 80 km
 
-- Implemented requested mass 60 kg with paper:
-  - reference area `0.554 m²`
-  - `Cd = 1.3`
-  - nominal `L/D = 0.25` with published family range 0.20–0.30
-  - resulting nominal ballistic coefficient `83.310 kg/m²`
-- Stored paper reference provenance:
-  - paper capsule mass 150 kg
-  - paper total spacecraft mass 330 kg
-  - satellite reference area 0.640 m²
-  - satellite `Cd = 2.2`
-- Added paper Entry Interface references:
-  - altitude 120 km
-  - speed 7.97 km/s (diagnostic reference)
-  - FPA −1.16 deg
-- Added paper phase/termination markers:
-  - aeroassist activation at drag acceleration 0.20 g
-  - guidance window through Mach 3
-  - parachute criterion at 240 m/s
-- Added density, Cd, and L/D scale factors for uncertainty studies.
-- Added paper 1.0 MW/m² heat-rate limit and 200 MJ/m² shallow-entry
-  heat-load reference diagnostics.
-- Exact paper CA/CN tables and Mach-10 trim angle were not published;
-  therefore the code uses an explicitly labeled reduced model instead of
-  fabricated tables.
+Important paper inconsistency:
 
-### Shared numerical/diagnostic changes
+- Table 3 gives a heat reference of `160,000 W`.
+- Fig. 8(c) appears to place the boundary near `1.6 MW/m^2`.
+- Eq. (32) uses `k_q*sqrt(rho)*V^3.15`, but `k_q` is not provided.
 
-- Added exact terminal-altitude and terminal-speed event refinement.
-- Added explicit termination reasons.
-- Added atmosphere-relative FPA and ballistic-coefficient reporting.
-- Added relay history names while retaining deprecated chaser aliases.
-- Added selectable re-entry gravity model:
-  - default `CENTRAL_SPHERICAL` for paper-style 3-DOF propagation
-  - optional `J2`
-- Fixed the default R-BAR final EI injection mass ledger:
-  `charge_final_reentry_fuel=true`.
-- Added transparent `reference_area_m2`, `cd`, and `nominal_ld` study
-  overrides.
+The current Sutton-Graves result is therefore not used to claim paper heat
+compliance.
 
-## Tests and commands already executed
+### Saito et al. — CAPSULE
 
-### Final static and focused regression test
+Source: `tmp/pdfs/capsule.pdf`
 
-Executed after the latest AoA-endpoint, blackout-status, R-BAR fuel-ledger,
-mass-budget, and central-gravity changes:
+The current mode is now explicitly described as a 60 kg reduced surrogate:
+
+- mass: 60 kg, intentionally replacing the paper's 150 kg
+- reference area: 0.554 m²
+- `Cd = 1.3`
+- nominal constant `L/D = 0.25`
+- beta: 83.310 kg/m²
+- paper 150 kg beta with the same `Cd*A`: 208.28 kg/m²
+
+Confirmed paper details now stored or documented:
+
+- four Table 4 entry cases, including geodetic altitude 121.01–121.15 km,
+  speed 7.97 km/s, FPA -1.16/-1.17 deg, longitude, latitude, azimuth,
+  and 4,852–4,920 km range-to-go
+- target latitude/longitude 22.74/158.78 deg
+- first 0.20 g drag-acceleration crossing, Mach 3 guidance cutoff, and
+  240 m/s termination
+- density uncertainty ±10 percent
+- explicit-case `Cd` uncertainty ±10 percent
+- RPC-case `Cd` uncertainty ±20 percent
+- recession-style `L/D` change about 10 percent
+- capsule-family envelope `L/D = 0.20–0.30`, kept distinct from uncertainty
+
+The paper uses proprietary `CA,CN(Mach,alpha)` data and an unpublished
+Mach-10 trim AoA. Exact capsule aerodynamics cannot be reconstructed from
+the PDF.
+
+The paper heating law is Detra-Kemp-Riddell Eq. (28), not Sutton-Graves.
+The 1 MW/m² value is an HSRC allowable heat rate; about 200 MJ/m² is an
+observed shallow-entry load, not a declared allowable total-load limit.
+
+## Implemented corrections in this continuation
+
+### SPACEPLANE
+
+- Removed silent clipping of negative `CL` from the exact paper polynomial.
+- Added two explicit relay modes:
+  - `MISSION_TARGET_DYNAMIC_ORBIT` — default requested generalization
+  - `PAPER_TDRS_STATIC_EARTH_FIXED` — analytic paper-reference GEO relay
+- Added paper TDRS validation and a regression at 42,164 km radius.
+- Implemented stateful `PAPER_BZC`/`BLACKOUT_ONLY` gating for mission runs
+  that begin above the paper's 80 km initial point: wait for the first
+  downward 80 km entry, remain active through later skips above 80 km, then
+  exit permanently at the first downward 60 km crossing.
+- Retained `ALTITUDE_BAND` only as a non-paper literal 60–80 km option.
+- Added published initial scenarios and terminal-state references.
+- Renamed the interpretation of the bank scan to
+  `instantaneous_bank_geometric_reachable`; it is not guidance feasibility.
+- A disabled bank scan now remains explicitly unevaluated (`NaN`) instead
+  of treating the prescribed bank angle as the best attainable result.
+- Included active antenna-geometry failures in overall constraint status and
+  the main-run warning.
+- Stored and documented the paper's internally inconsistent heat references.
+
+### CAPSULE
+
+- Added the full Table 4 entry-state provenance and paper target coordinates.
+- Added the paper capsule inertia and 150 kg ballistic-coefficient reference.
+- Labeled `use_paper_entry_conditions` as `ALTITUDE_AND_FPA_ONLY`; it does not
+  force speed, position, azimuth, or range-to-go.
+- Made the 0.20 g activation marker latch after first crossing.
+- Disabled the generic 20 km stop by default in capsule mode so the paper's
+  240 m/s criterion has priority.
+- Added a zero-altitude `GROUND_IMPACT` safety event to prevent propagation
+  below the spherical surface if 240 m/s is never reached.
+- Added `run.reentry.capsule.altitude_termination_enabled` as an explicit
+  optional safety-stop control.
+- Separated density, explicit `Cd`, RPC `Cd`, recession `L/D`, and family
+  `L/D` references.
+- Documented that entry-interface separation is a project assumption; the
+  paper separates after its deorbit/standby/de-spin/release-attitude sequence
+  and before entry interface.
+
+### Shared rigor/status changes
+
+- Heating model and paper heating model are now separately reported.
+- A non-comparable heat model yields:
+  - `heat_constraint_evaluated = false`
+  - `heat_constraint_satisfied = NaN`
+  - aggregate paper-path status `NaN` unless another evaluated constraint
+    is definitely violated
+- Raw Sutton-Graves values remain available for relative sensitivity work.
+- Added tri-state overall constraint reporting:
+  - definite violation when an evaluated path or antenna constraint fails
+  - success only when every configured constraint is evaluated and passes
+  - `NaN` when compliance cannot be established
+- Applied the same Kleene-style ordering to partially evaluated antenna/BZC
+  intervals: any known failure is `false`; otherwise a fully evaluated pass
+  is `true`; only genuinely unresolved cases remain `NaN`.
+- Disabled altitude termination now reports
+  `terminal_altitude_error_m = NaN`; capsule plots and environment summaries
+  advertise the 240 m/s nominal stop and 0 km ground-safety event instead of
+  presenting the inactive 20 km stop as operational.
+- Corrected the documentation error that recommended
+  `co_rotate_atmosphere=false`. Both papers' rotating-Earth entry equations
+  correspond to the ECI implementation with `co_rotate_atmosphere=true`.
+- Updated README and assumptions/limitations to distinguish paper reference,
+  reduced implementation, and surrogate diagnostic.
+
+## Verification completed
+
+### Static analysis and focused regression
+
+Command:
 
 ```powershell
 matlab -batch "files={'Mission_Config.m','Mission_Run_Config.m','Main_Mission_Simulator.m','Reentry_Propagator.m','validation/Validate_Reentry_Propagator.m','validation/Compare_Capsule_Separation_Sensitivity.m'}; n=0; for k=1:numel(files), issues=checkcode(files{k},'-id'); fprintf('%s: %d issues\n',files{k},numel(issues)); n=n+numel(issues); end; assert(n==0,'checkcode reported issues'); addpath('validation'); results=Validate_Reentry_Propagator(); assert(results.passed);"
@@ -145,159 +188,119 @@ matlab -batch "files={'Mission_Config.m','Mission_Run_Config.m','Main_Mission_Si
 
 Result:
 
-- MATLAB Code Analyzer: 0 issues in all six checked `.m` files.
+- Code Analyzer: 0 issues in all six files.
 - `Validate_Reentry_Propagator`: PASS.
-- Terminal-altitude refinement error: `-2.39229e-05 m`.
-- Coarse/fine event-time difference: `0 s`.
-- Spaceplane test ballistic coefficient: `525.549 kg/m²`.
-- 60 kg capsule ballistic coefficient: `83.310 kg/m²`.
-- Synthetic initial antenna RAAP: `123.613 deg`.
-- The regression suite includes:
-  - terminal event accuracy and timestep comparison
-  - explicit timeout classification
-  - co-rotating-atmosphere option behavior
-  - paper AoA schedule and scalar override
-  - non-monotonic AoA endpoint clamp
-  - antenna range failure
-  - Earth occultation
-  - blackout interval not evaluated
-  - relay/chaser history compatibility
-  - capsule mass, beta, L/D, EI reference
-  - rejection when capsule mass exceeds entry-stack mass
+- terminal-altitude refinement error: `-2.39229e-05 m`
+- coarse/fine event-time difference: `0 s`
+- synthetic spaceplane beta: `525.549 kg/m²`
+- capsule beta: `83.310 kg/m²`
+- initial synthetic aft-antenna RAAP: `123.613 deg`
+
+New regression coverage includes:
+
+- negative zero-AoA `CL` retained
+- BZC inactive before the first downward 80 km entry
+- BZC activation at 80 km and persistence during a post-entry skip above it
+- permanent BZC exit after the first downward 60 km crossing
+- deterministic initialization inside the BZC and below its 60 km exit
+- BZC unevaluated below 60 km
+- known antenna failure retained under partial geometry evaluation
+- disabled instantaneous bank scan retained as unevaluated
+- static paper TDRS radius
+- non-comparable paper heat status
+- latched 0.20 g marker
+- capsule altitude termination disabled by default
+- recession-style `L/D` uncertainty provenance
 
 ### Full SPACEPLANE pipeline
 
-Executed successfully:
+Result: PASS, exit code 0.
 
-```powershell
-matlab -batch "set(0,'DefaultFigureVisible','off'); Main_Mission_Simulator;"
-```
+- termination: `TERMINAL_ALTITUDE`, 20 km
+- entry duration: about 1819.85 s
+- max dynamic pressure: about 31.406 kPa
+- max aero load: about 2.568 g
+- aft RAAP: about 112.94–178.91 deg
+- target LOS eventually occulted
+- overall evaluated constraints correctly reported as violated
+- heat output explicitly labeled `SUTTON_GRAVES_SURROGATE`
+- active and total-accounted final mass: 1638.67 kg
 
-Result at that checkpoint:
-
-- Exit code 0.
-- Phase 4 terminated at 20 km with `TERMINAL_ALTITUDE`.
-- Open-loop default violated paper constraints:
-  - maximum dynamic pressure about 31.685 kPa
-  - maximum aero load about 2.541 g
-  - aft-antenna RAAP about 112.94–178.92 deg, outside a 45 deg half-cone
-- This is expected evidence that the current bank=0 open-loop trajectory is
-  not a constrained optimum.
-
-This full run occurred before the final central-gravity/default-budget and
-P1 reporting fixes. Focused regression passed afterward, but the exact final
-revision has not yet received another full SPACEPLANE run.
+This is expected evidence that the default bank=0 trajectory is not a
+constraint-satisfying optimum.
 
 ### Full CAPSULE pipeline
 
-Executed successfully using a temporary shadow run config; the temporary file
-was deleted afterward.
+Result: PASS, exit code 0.
 
-Result at that checkpoint:
+- initial stack: 2060 kg
+- entry-interface stack: 1821.636 kg
+- separated capsule: 60 kg
+- residual carrier: 1761.636 kg, `NOT_PROPAGATED`
+- termination: `PARACHUTE_SPEED`
+- duration: about 977.79 s
+- event altitude: about 26.06 km
+- max Sutton-Graves surrogate heat: about 52.298 W/cm²
+- total surrogate heat: about 242.191 MJ/m²
+- max dynamic pressure: about 2.081 kPa
+- max aero load: about 2.625 g
+- active final mass: 60 kg
+- total-accounted mass: 1821.636 kg
 
-- Initial stack: 2,060 kg.
-- EI stack after burns: 1,821.636 kg.
-- Separated capsule: 60 kg.
-- Residual carrier: 1,761.636 kg, marked `NOT_PROPAGATED`.
-- Phase 4 termination: `PARACHUTE_SPEED`.
-- Duration: about 972.17 s under the then-current J2 setting.
-- Final altitude: about 26.06 km.
-- Peak heat flux: about 52.231 W/cm².
-- Total heat load: about 241.565 MJ/m².
-- Peak dynamic pressure: about 2.083 kPa.
-- Peak aerodynamic load: about 2.628 g.
+Assertions passed for 240 m/s priority, non-comparable heat status, capsule
+mass, residual-carrier status, and total mass conservation.
 
-This full run also occurred before the final central-gravity/default-budget
-and P1 reporting fixes. The exact final revision still needs a full CAPSULE
-pipeline rerun.
+### Non-model command errors encountered
 
-### Final capsule/stack ballistic sensitivity
+- One SPACEPLANE invocation failed before execution because nested
+  PowerShell/MATLAB quote escaping broke a string comparison. The corrected
+  command passed.
+- The first CAPSULE integration completed physically but the final assertion
+  referenced a nonexistent local field name. The assertion was corrected to
+  `reentry_atmo_info.carrier_post_separation_status`; the repeated full run
+  passed.
 
-Executed after switching the default re-entry gravity model to central
-spherical gravity:
+## Deliberately not implemented
 
-```powershell
-matlab -batch "addpath('validation'); comparison=Compare_Capsule_Separation_Sensitivity([],1200); assert(comparison.separated_mass_kg==60);"
-```
+- GPOPS-II/two-phase pseudospectral SPACEPLANE optimization
+- bank-rate control and `integral(abs(bank_rate))` objective
+- terminal longitude/latitude/range targeting and published-figure
+  cross-validation
+- capsule HTS/RCS six-phase deorbit and attitude dynamics
+- capsule explicit guidance Eqs. (13)–(22) / Table 5
+- capsule RPC guidance Eqs. (23)–(25), lift/drag estimator, terminal bank
+  guidance, and bank reversals
+- proprietary capsule `CA,CN(Mach,alpha)` database and trim AoA
+- paper-compatible thermochemical heating calculations
+- RF link budget, gain pattern, polarization, coding margin, service
+  availability, and plasma attenuation
+- arbitrary-altitude separation with dual capsule/carrier propagation
+- validated composite chaser-capsule aerodynamics
+- geodetic WGS-84 entry dynamics, rarefied flow, ablation, and TPS response
 
-Result:
+## Recommended next work
 
-- 60 kg capsule: `beta = 83.31 kg/m²`.
-- 2,060 kg stack with the same capsule CdA:
-  `beta = 2860.32 kg/m²`.
-- At the common time 1,046.5 s:
-  - position difference about 1,691.935 km
-  - velocity-vector difference about 7,271.999 m/s
-  - altitude about 26.078 km versus 144.573 km
-- Current-chaser CdA surrogate (`Cd=2.2`, `A=4.0 m²`):
-  `beta = 234.09 kg/m²`.
-- At the common time 792.5 s:
-  - capsule versus surrogate position difference about 380.070 km
-  - velocity-vector difference about 4,709.684 m/s
-  - altitude about 65.868 km versus 20.000 km
-
-These are ballistic-coefficient sensitivity cases, not validated
-composite-stack aerodynamics.
-
-## Interpretation preserved for the next session
-
-- If the capsule remains attached until the Entry Interface and zero
-  separation impulse is assumed, capsule and stack have exactly the same
-  position/velocity at separation by construction.
-- Before EI, mass alone cannot determine drag divergence:
-  `a_D = q*Cd*A/m = q/beta`; composite `CdA` is required.
-- After separation, the assumed 60 kg capsule beta is much smaller than either
-  tested stack surrogate, so state divergence can become large.
-- The aft antenna does not “track” the Target by itself. The model evaluates
-  whether the prescribed AoA/bank trajectory satisfies geometry and whether
-  some instantaneous bank within ±60 deg could satisfy RAAP. A bank-history
-  optimizer or guidance law is still needed to maintain the constraint.
-
-## Remaining work
-
-Required next checks:
-
-1. Rerun the full default SPACEPLANE pipeline on the exact current revision.
-2. Rerun the full CAPSULE pipeline on the exact current revision and confirm:
-   - base chaser + capsule stack addition
-   - burn mass depletion
-   - EI split conservation
-   - `Remaining_Mass_kg` versus `Total_Accounted_Mass_kg`
-   - `PARACHUTE_SPEED` termination
-3. Run `git diff --check` and review the final diff after those integrations.
-4. Decide whether to stage/commit; nothing is currently staged.
-
-Useful additional regression work:
-
-- RAAP exactly aligned and exactly on the 45 deg cone boundary.
-- Automated Main-level stack-add → burn-depletion → split conservation test.
-- Timestep convergence for the full paper capsule case, especially
-  `dt = 0.5, 0.1, 0.01 s`.
-- Density/Cd/L/D uncertainty matrix execution and result table.
-
-Deliberately not implemented:
-
-- GPOPS-II/pseudospectral SPACEPLANE trajectory optimization.
-- Closed-loop bank/attitude control.
-- Capsule explicit or predictor-corrector guidance.
-- RF link budget, antenna gain pattern, frequency/polarization/coding margin,
-  or plasma attenuation model.
-- Arbitrary-altitude capsule separation and dual capsule/carrier propagation.
-- Validated composite chaser-capsule aerodynamics.
-- Missing capsule CA/CN/Mach trim database.
-- Ablation, TPS response, rarefied-flow model, and WGS-84 geodetic dynamics.
+1. Add a separate paper-regression runner for Zhang Tables 2–3 using the
+   80 km initial states, 25 km/800 m/s terminal references, paper TDRS, and
+   `PAPER_TOP`. This would validate the forward equations without claiming
+   optimization.
+2. Run capsule timestep convergence at 0.5, 0.1, and 0.01 s.
+3. Add automatic explicit (15-case) and RPC-reference (225-case) uncertainty
+   campaign generation, clearly labeled as reduced-model sensitivity rather
+   than guidance reproduction.
+4. Obtain or bound composite stack `Cd*A` before selecting a physical
+   pre-entry separation epoch.
+5. Obtain real antenna/link data before setting a finite communication range.
 
 ## Exact next starting point
 
-Start by reading this file, then:
-
 ```powershell
 git status --short
-matlab -batch "set(0,'DefaultFigureVisible','off'); Main_Mission_Simulator;"
+git diff --check
+git diff -- Main_Mission_Simulator.m Mission_Config.m Mission_Run_Config.m Reentry_Propagator.m
+git diff -- README.md docs/ASSUMPTIONS_AND_LIMITATIONS.md docs/REENTRY_PAPER_MODELS.md
+git diff -- validation/Validate_Reentry_Propagator.m CODEX_CHECKPOINT.md
 ```
 
-After the default SPACEPLANE run, create a temporary/shadow
-`Mission_Run_Config.m` selecting `CAPSULE` without editing the saved default,
-run the full simulator, delete the temporary override, and inspect the final
-mass-budget columns. Do not assume the earlier full-pipeline numbers are the
-final central-gravity values.
+Then decide whether to commit the nine modified files. The default run
+configuration is already restored to `SPACEPLANE`.

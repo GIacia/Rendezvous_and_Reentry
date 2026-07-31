@@ -78,24 +78,55 @@ function sys = Mission_Config()
     sys.reentry_vehicle.spaceplane.aoa_values_deg = [15, 15, 40, 40];
     sys.reentry_vehicle.spaceplane.cl_polynomial = [-0.041065, 0.016292, 0.0002602];
     sys.reentry_vehicle.spaceplane.cd_from_cl_polynomial = [0.080505, -0.03026, 0.86495];
+    % The propagated heat rate is a Sutton-Graves surrogate. Zhang Eq. (32)
+    % uses k_q*sqrt(rho)*V^3.15, so its numerical limit is not applied as a
+    % pass/fail constraint until the paper coefficient and normalization are
+    % reproduced consistently.
+    sys.reentry_vehicle.spaceplane.heating_model = "SUTTON_GRAVES_SURROGATE";
+    sys.reentry_vehicle.spaceplane.paper_heating_model = "ZHANG_EQ32_KQ_SQRT_RHO_V_3P15";
+    sys.reentry_vehicle.spaceplane.heat_constraint_comparable = false;
+    sys.reentry_vehicle.spaceplane.paper_heat_limit_table_value = 160e3;
+    sys.reentry_vehicle.spaceplane.paper_heat_limit_figure_approx_W_m2 = 1.6e6;
+    sys.reentry_vehicle.spaceplane.paper_heat_limit_internally_consistent = false;
     sys.reentry_vehicle.spaceplane.constraints.max_dynamic_pressure_Pa = 20e3;
     sys.reentry_vehicle.spaceplane.constraints.max_g_load = 2.5;
     sys.reentry_vehicle.spaceplane.constraints.max_heat_flux_W_m2 = 160e3;
     sys.reentry_vehicle.spaceplane.constraints.max_bank_angle_deg = 60;
     sys.reentry_vehicle.spaceplane.constraints.max_bank_rate_deg_s = 10;
+    % Published simulation cases, retained as references rather than forced
+    % onto the mission-generated entry state. Columns are longitude [deg],
+    % latitude [deg], speed [m/s], FPA [deg], and heading [deg].
+    sys.reentry_vehicle.spaceplane.paper_initial_altitude_m = 80e3;
+    sys.reentry_vehicle.spaceplane.paper_initial_scenarios = [ ...
+        55, 25, 6800, -0.5, 45; ...
+        65, 10, 7000, -1.0, 50; ...
+        75,  0, 7200,  0.0, 50];
+    sys.reentry_vehicle.spaceplane.paper_terminal_longitude_deg = 111.3;
+    sys.reentry_vehicle.spaceplane.paper_terminal_latitude_deg = 42.2;
+    sys.reentry_vehicle.spaceplane.paper_terminal_altitude_m = 25e3;
+    sys.reentry_vehicle.spaceplane.paper_terminal_speed_m_s = 800;
     sys.reentry_vehicle.spaceplane.communication.enabled = true;
+    sys.reentry_vehicle.spaceplane.communication.relay_mode = "MISSION_TARGET_DYNAMIC_ORBIT";
     % The paper uses [0;1;0] (upper-body boresight). AFT implements the
     % requested rear-facing antenna while retaining the same RAAP geometry.
     sys.reentry_vehicle.spaceplane.communication.antenna_mount = "AFT"; % AFT or PAPER_TOP
     sys.reentry_vehicle.spaceplane.communication.paper_top_boresight_body = [0;1;0];
     sys.reentry_vehicle.spaceplane.communication.aft_boresight_body = [-1;0;0];
     sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg = 45;
+    sys.reentry_vehicle.spaceplane.communication.angle_tolerance_deg = 1e-10;
     sys.reentry_vehicle.spaceplane.communication.min_range_m = 0;
     sys.reentry_vehicle.spaceplane.communication.max_range_m = inf; % set from a real link budget when available
-    sys.reentry_vehicle.spaceplane.communication.tracking_scope = "CONTINUOUS"; % CONTINUOUS or BLACKOUT_ONLY
+    % CONTINUOUS, PAPER_BZC/BLACKOUT_ONLY, or literal ALTITUDE_BAND.
+    sys.reentry_vehicle.spaceplane.communication.tracking_scope = "CONTINUOUS";
     sys.reentry_vehicle.spaceplane.communication.blackout_upper_altitude_m = 80e3;
     sys.reentry_vehicle.spaceplane.communication.blackout_lower_altitude_m = 60e3;
     sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility = true;
+    % Exact paper TDRS reference. The project normally propagates its own
+    % Target satellite instead of forcing this stationary GEO relay.
+    sys.reentry_vehicle.spaceplane.communication.paper_tdrs_longitude_deg = 77;
+    sys.reentry_vehicle.spaceplane.communication.paper_tdrs_latitude_deg = 0;
+    sys.reentry_vehicle.spaceplane.communication.paper_tdrs_geocentric_radius_m = 42164e3;
+    sys.reentry_vehicle.spaceplane.communication.paper_tdrs_stationary_earth_fixed = true;
 
     % Paper-based reduced-order CAPSULE model.
     % Saito et al., "Guidance strategies for controlled Earth reentry of
@@ -109,6 +140,7 @@ function sys = Mission_Config()
     sys.reentry_vehicle.capsule.add_to_chaser_initial_mass = true;
     sys.reentry_vehicle.capsule.separation_mode = "ENTRY_INTERFACE";
     sys.reentry_vehicle.capsule.use_paper_entry_conditions = true;
+    sys.reentry_vehicle.capsule.paper_entry_condition_scope = "ALTITUDE_AND_FPA_ONLY";
     sys.reentry_vehicle.capsule.aero_model = "PAPER_CAPSULE_REDUCED";
     sys.reentry_vehicle.capsule.nominal_ld = 0.25; % paper range: 0.20-0.30
     sys.reentry_vehicle.capsule.trim_aoa_deg = 0;  % surrogate: paper does not publish the Mach-10 trim angle
@@ -118,9 +150,20 @@ function sys = Mission_Config()
     sys.reentry_vehicle.capsule.guidance_activation_drag_g = 0.20;
     sys.reentry_vehicle.capsule.guidance_cutoff_mach = 3;
     sys.reentry_vehicle.capsule.parachute_deploy_speed_m_s = 240;
+    sys.reentry_vehicle.capsule.altitude_termination_enabled = false;
+    sys.reentry_vehicle.capsule.safety_floor_altitude_m = 0;
     sys.reentry_vehicle.capsule.density_uncertainty_fraction = 0.10;
+    sys.reentry_vehicle.capsule.explicit_cd_uncertainty_fraction = 0.10;
     sys.reentry_vehicle.capsule.cd_uncertainty_fraction = 0.20;
+    sys.reentry_vehicle.capsule.ld_recession_uncertainty_fraction = 0.10;
     sys.reentry_vehicle.capsule.ld_bounds = [0.20, 0.30];
+    % Saito Eq. (28) is a Detra-Kemp-Riddell expression with stagnation
+    % enthalpy/hot-wall terms that are not specified sufficiently here. Keep
+    % the existing Sutton-Graves result as a labeled surrogate and do not
+    % use it to declare compliance with the paper heat references.
+    sys.reentry_vehicle.capsule.heating_model = "SUTTON_GRAVES_SURROGATE";
+    sys.reentry_vehicle.capsule.paper_heating_model = "DETRA_KEMP_RIDDELL_EQ28";
+    sys.reentry_vehicle.capsule.heat_constraint_comparable = false;
     sys.reentry_vehicle.capsule.constraints.max_heat_flux_W_m2 = 1.0e6;
     sys.reentry_vehicle.capsule.reference_total_heat_load_J_m2 = 200e6;
     % Published reference vehicle values retained for provenance only.
@@ -128,6 +171,22 @@ function sys = Mission_Config()
     sys.reentry_vehicle.capsule.paper_spacecraft_total_mass_kg = 330;
     sys.reentry_vehicle.capsule.paper_satellite_reference_area_m2 = 0.640;
     sys.reentry_vehicle.capsule.paper_satellite_cd = 2.2;
+    sys.reentry_vehicle.capsule.paper_capsule_inertia_kg_m2 = [ ...
+         2.85,   -0.0115, 0.00580; ...
+        -0.0115,  2.92,   0.00580; ...
+         0.00580, 0.00580, 2.94];
+    sys.reentry_vehicle.capsule.paper_entry_altitude_range_m = [121.01e3, 121.15e3];
+    sys.reentry_vehicle.capsule.paper_entry_fpa_range_deg = [-1.17, -1.16];
+    sys.reentry_vehicle.capsule.paper_entry_range_to_go_m = [4852e3, 4882e3, 4890e3, 4920e3];
+    % Columns: geodetic altitude [km], longitude [deg], latitude [deg],
+    % speed [km/s], FPA [deg], azimuth [deg], range-to-go [km].
+    sys.reentry_vehicle.capsule.paper_entry_cases = [ ...
+        121.13, 176.04, 64.22, 7.97, -1.16, -161.74, 4852; ...
+        121.06, 176.22, 64.47, 7.97, -1.16, -161.61, 4882; ...
+        121.01, 176.26, 64.54, 7.97, -1.16, -161.59, 4890; ...
+        121.15, 176.44, 64.79, 7.97, -1.17, -161.46, 4920];
+    sys.reentry_vehicle.capsule.paper_target_latitude_deg = 22.74;
+    sys.reentry_vehicle.capsule.paper_target_longitude_deg = 158.78;
 
     ld_aoa_deg = [0 2 5 8 10 12 15 18 20 22 25 30 35 40 45 50 55 60 65 70 75 80];
 

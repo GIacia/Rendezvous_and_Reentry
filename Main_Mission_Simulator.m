@@ -520,12 +520,21 @@ fprintf('   vehicle mode: %s, shape: %s\n', ...
     fprintf('   atmosphere-relative FPA %.3f -> %.3f deg, beta %.3f kg/m^2\n', ...
             reentry_atmo_info.initial_fpa_rel_deg, reentry_atmo_info.final_fpa_rel_deg, ...
             reentry_atmo_info.ballistic_coefficient_kg_m2);
-fprintf('   max heat flux: %.3f W/cm^2, total heat load: %.3f MJ/m^2\n', ...
+fprintf('   surrogate heat model %s: max %.3f W/cm^2, total %.3f MJ/m^2\n', ...
+        char(reentry_atmo_info.heating_model), ...
         reentry_atmo_info.max_heat_flux_W_m2/1e4, reentry_atmo_info.total_heat_load_J_m2/1e6);
 if isfinite(reentry_atmo_info.reference_total_heat_load_J_m2)
-    fprintf('   paper shallow-entry heat-load reference: %.3f MJ/m^2, exceeded: %s\n', ...
-            reentry_atmo_info.reference_total_heat_load_J_m2/1e6, ...
-            char(bool_label_local(reentry_atmo_info.exceeds_reference_total_heat_load)));
+    if reentry_atmo_info.heat_constraint_comparable
+        fprintf('   paper shallow-entry heat-load reference: %.3f MJ/m^2, exceeded: %s\n', ...
+                reentry_atmo_info.reference_total_heat_load_J_m2/1e6, ...
+                char(bool_label_local(reentry_atmo_info.exceeds_reference_total_heat_load)));
+    else
+        fprintf(['   paper shallow-entry heat-load reference: %.3f MJ/m^2; direct ' ...
+                 'pass/fail not evaluated (%s differs from %s)\n'], ...
+                reentry_atmo_info.reference_total_heat_load_J_m2/1e6, ...
+                char(reentry_atmo_info.heating_model), ...
+                char(reentry_atmo_info.paper_heating_model));
+    end
 end
 fprintf('   max dynamic pressure: %.3f kPa, max aero g-load: %.3f g\n', ...
         reentry_atmo_info.max_dynamic_pressure_Pa/1e3, reentry_atmo_info.max_g_load);
@@ -541,12 +550,22 @@ if reentry_atmo_info.antenna_evaluated
             reentry_atmo_info.min_relay_range_m/1e3, reentry_atmo_info.max_relay_range_m/1e3, ...
             reentry_atmo_info.antenna_beam_half_angle_deg, ...
             char(bool_label_local(reentry_atmo_info.antenna_tracking_maintained)));
-    fprintf('   best bank-feasible max RAAP: %.2f deg, feasible throughout active interval: %s\n', ...
-            reentry_atmo_info.max_best_feasible_raap_deg, ...
-            char(bool_label_local(reentry_atmo_info.antenna_bank_feasible)));
+    if reentry_atmo_info.antenna_bank_scan_enabled
+        fprintf(['   instantaneous bank-only geometric scan: max best RAAP %.2f deg, ' ...
+                 'reachable at each sample: %s\n'], ...
+                reentry_atmo_info.max_instantaneous_best_raap_deg, ...
+                char(bool_label_local(reentry_atmo_info.instantaneous_bank_geometric_reachable)));
+    else
+        fprintf('   instantaneous bank-only geometric scan: disabled (not evaluated)\n');
+    end
 end
-if ~reentry_atmo_info.path_constraints_satisfied
-    warning('One or more paper-based re-entry path constraints were exceeded. Inspect reentry summary margins.');
+if reentry_atmo_info.any_evaluated_constraint_violated
+    warning(['One or more evaluated reduced-order re-entry constraints were violated. ' ...
+             'This includes active antenna geometry when configured.']);
+end
+if ~reentry_atmo_info.all_configured_constraints_evaluated
+    fprintf(['   constraint status: incomplete; paper heat compliance is not ' ...
+             'claimed for the configured surrogate model.\n']);
 end
 
 %% 5. Summary and Output
@@ -637,7 +656,11 @@ yline(sys.h_insert/1e3, 'k:', 'Insertion (300km)');
 yline(sys.h_target/1e3, 'k--', 'Target (500km)');
 yline(sys.h_reentry/1e3, 'k:', sprintf('Parking (%.0fkm)', sys.h_reentry/1000));
 yline(sys.h_entry_interface/1e3, 'm:', sprintf('Entry Interface (%.0fkm)', sys.h_entry_interface/1000));
-yline(sys.reentry_vehicle.terminal_altitude/1e3, 'm--', 'Entry Stop');
+if reentry_atmo_info.altitude_termination_enabled
+    yline(sys.reentry_vehicle.terminal_altitude/1e3, 'm--', 'Entry Stop');
+elseif isfinite(reentry_atmo_info.safety_floor_altitude_m)
+    yline(reentry_atmo_info.safety_floor_altitude_m/1e3, 'r:', 'Ground Safety');
+end
 
 title('Altitude Profile');
 xlabel('Mission Time (Hours)'); ylabel('Altitude (km)');
@@ -677,7 +700,7 @@ title('Dynamic Pressure');
 subplot(3, 2, 4);
 plot(entry_min, hist_reentry.heat_flux/1e4, 'r-', 'LineWidth', 2); grid on;
 xlabel('Entry Time (min)'); ylabel('Heat Flux (W/cm^2)');
-title('Sutton-Graves Stagnation Heat Flux');
+title('Sutton-Graves Surrogate Heat Flux');
 
 subplot(3, 2, 5);
 plot(entry_min, hist_reentry.g_load, 'Color', [0.2 0.5 0.2], 'LineWidth', 2); grid on;
@@ -806,7 +829,9 @@ function sys = apply_run_config_to_sys_local(sys, run_cfg)
     sys.reentry_vehicle.capsule.add_to_chaser_initial_mass = get_run_bool_field_local(run_cfg, {'reentry','capsule','add_to_chaser_initial_mass'}, sys.reentry_vehicle.capsule.add_to_chaser_initial_mass);
     sys.reentry_vehicle.capsule.separation_mode = get_run_string_field_local(run_cfg, {'reentry','capsule','separation_mode'}, sys.reentry_vehicle.capsule.separation_mode);
     sys.reentry_vehicle.capsule.use_paper_entry_conditions = get_run_bool_field_local(run_cfg, {'reentry','capsule','use_paper_entry_conditions'}, sys.reentry_vehicle.capsule.use_paper_entry_conditions);
+    sys.reentry_vehicle.capsule.altitude_termination_enabled = get_run_bool_field_local(run_cfg, {'reentry','capsule','altitude_termination_enabled'}, sys.reentry_vehicle.capsule.altitude_termination_enabled);
     sys.reentry_vehicle.spaceplane.communication.enabled = get_run_bool_field_local(run_cfg, {'reentry','communication','enabled'}, sys.reentry_vehicle.spaceplane.communication.enabled);
+    sys.reentry_vehicle.spaceplane.communication.relay_mode = get_run_string_field_local(run_cfg, {'reentry','communication','relay_mode'}, sys.reentry_vehicle.spaceplane.communication.relay_mode);
     sys.reentry_vehicle.spaceplane.communication.antenna_mount = get_run_string_field_local(run_cfg, {'reentry','communication','antenna_mount'}, sys.reentry_vehicle.spaceplane.communication.antenna_mount);
     sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg = get_run_number_field_local(run_cfg, {'reentry','communication','beam_half_angle_deg'}, sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg);
     sys.reentry_vehicle.spaceplane.communication.min_range_m = get_run_number_field_local(run_cfg, {'reentry','communication','min_range_m'}, sys.reentry_vehicle.spaceplane.communication.min_range_m);
@@ -1446,7 +1471,9 @@ function sys = apply_json_to_sys_local(sys, cfg)
         sys.reentry_vehicle.capsule.add_to_chaser_initial_mass = get_json_bool_local(cfg, {'reentry','capsule','add_to_chaser_initial_mass'}, sys.reentry_vehicle.capsule.add_to_chaser_initial_mass);
         sys.reentry_vehicle.capsule.separation_mode = get_json_string_local(cfg, {'reentry','capsule','separation_mode'}, sys.reentry_vehicle.capsule.separation_mode);
         sys.reentry_vehicle.capsule.use_paper_entry_conditions = get_json_bool_local(cfg, {'reentry','capsule','use_paper_entry_conditions'}, sys.reentry_vehicle.capsule.use_paper_entry_conditions);
+        sys.reentry_vehicle.capsule.altitude_termination_enabled = get_json_bool_local(cfg, {'reentry','capsule','altitude_termination_enabled'}, sys.reentry_vehicle.capsule.altitude_termination_enabled);
         sys.reentry_vehicle.spaceplane.communication.enabled = get_json_bool_local(cfg, {'reentry','communication','enabled'}, sys.reentry_vehicle.spaceplane.communication.enabled);
+        sys.reentry_vehicle.spaceplane.communication.relay_mode = get_json_string_local(cfg, {'reentry','communication','relay_mode'}, sys.reentry_vehicle.spaceplane.communication.relay_mode);
         sys.reentry_vehicle.spaceplane.communication.antenna_mount = get_json_string_local(cfg, {'reentry','communication','antenna_mount'}, sys.reentry_vehicle.spaceplane.communication.antenna_mount);
         sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg = get_json_number_local(cfg, {'reentry','communication','beam_half_angle_deg'}, sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg);
         sys.reentry_vehicle.spaceplane.communication.min_range_m = get_json_number_local(cfg, {'reentry','communication','min_range_m'}, sys.reentry_vehicle.spaceplane.communication.min_range_m);
@@ -1501,10 +1528,20 @@ function print_environment_config_local(sys)
     if upper(string(sys.reentry_vehicle.vehicle_mode)) == "CAPSULE"
         reentry_shape = "CAPSULE";
     end
-    fprintf('Re-entry vehicle: mode %s, shape %s, terminal altitude %.1f km, lift model %s, entry atmosphere ISA76\n', ...
-            char(string(sys.reentry_vehicle.vehicle_mode)), char(reentry_shape), ...
-            sys.reentry_vehicle.terminal_altitude/1000, ...
-            char(bool_label_local(sys.reentry_vehicle.lift_enabled)));
+    if upper(string(sys.reentry_vehicle.vehicle_mode)) == "CAPSULE" && ...
+            ~sys.reentry_vehicle.capsule.altitude_termination_enabled
+        fprintf(['Re-entry vehicle: mode %s, shape %s, nominal stop %.1f m/s, ' ...
+                 'ground safety %.1f km, lift model %s, entry atmosphere ISA76\n'], ...
+                char(string(sys.reentry_vehicle.vehicle_mode)), char(reentry_shape), ...
+                sys.reentry_vehicle.capsule.parachute_deploy_speed_m_s, ...
+                sys.reentry_vehicle.capsule.safety_floor_altitude_m/1000, ...
+                char(bool_label_local(sys.reentry_vehicle.lift_enabled)));
+    else
+        fprintf('Re-entry vehicle: mode %s, shape %s, terminal altitude %.1f km, lift model %s, entry atmosphere ISA76\n', ...
+                char(string(sys.reentry_vehicle.vehicle_mode)), char(reentry_shape), ...
+                sys.reentry_vehicle.terminal_altitude/1000, ...
+                char(bool_label_local(sys.reentry_vehicle.lift_enabled)));
+    end
 end
 
 function sys = apply_pre_berthing_drag_scope_local(sys, run_cfg)

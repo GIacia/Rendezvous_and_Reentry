@@ -44,11 +44,20 @@ But it is limited for:
 
 The atmospheric-entry stage is also simplified:
 
-- the re-entry vehicle keeps a fixed AoA and bank angle during entry
-- Cd is assumed constant because the externally provided shape data includes geometry and L/D trends, not full Cd/Cl tables
-- L/D curves are approximate values derived from externally provided data
-- heat flux uses a Sutton-Graves stagnation-point estimate
-- communication is checked as geometric Earth-limb line of sight only; plasma blackout physics is not modeled yet
+- SPACEPLANE uses a paper-derived speed-scheduled AoA and polynomial `CL/CD`;
+  CAPSULE uses a constant `Cd=1.3`, `L/D=0.25` surrogate because the paper's
+  proprietary `CA/CN(Mach,AoA)` database and trim AoA are unavailable
+- bank remains an open-loop constant; no trajectory-level optimizer,
+  predictor-corrector guidance, or attitude/RCS controller is present
+- built-in spaceplane area/nose radius and all capsule nose-radius data are
+  project assumptions, so aerodynamic and aerothermal model-form uncertainty
+  dominates fine numerical accuracy
+- heat flux is a Sutton-Graves surrogate; it is not quantitatively comparable
+  to either paper's published heat law, so paper heat compliance is reported
+  as unevaluated
+- communication checks RAAP cone, configured geometric range, and Earth
+  occultation; it does not model RF link margin, antenna gain pattern, plasma
+  attenuation, or service availability
 
 ---
 
