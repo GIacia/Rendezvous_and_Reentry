@@ -8,7 +8,7 @@ function sys = Mission_Config()
 
     % Spacecraft properties.
     sys.Target_Mass = 2000;    % [kg]
-    sys.Chaser_Mass_Init = 2000; % Initial wet mass [kg]
+    sys.Chaser_Mass_Init = 2000; % Base chaser wet mass [kg], excluding an add-on capsule by default
     sys.Inertia = diag([800, 800, 600]); % Moment of inertia [kg*m^2]
 
     % Orbit and mission altitudes.
@@ -54,14 +54,80 @@ function sys = Mission_Config()
     % Atmospheric re-entry vehicle options.
     % Shape dimensions come from external re-entry vehicle data.
     % L/D values are approximate values from external data.
+    sys.reentry_vehicle.vehicle_mode = "SPACEPLANE"; % SPACEPLANE or CAPSULE
     sys.reentry_vehicle.selected_shape = "COMPROMISE";
     sys.reentry_vehicle.dt = 0.5;                    % [s]
     sys.reentry_vehicle.max_time = 2500;             % [s]
     sys.reentry_vehicle.terminal_altitude = 20e3;    % [m]
     sys.reentry_vehicle.lift_enabled = true;
+    sys.reentry_vehicle.gravity_model = "CENTRAL_SPHERICAL"; % CENTRAL_SPHERICAL or J2
     sys.reentry_vehicle.bank_angle_deg = 0;
     sys.reentry_vehicle.los_margin_altitude = 0;     % [m] Earth-limb clearance margin
     sys.reentry_vehicle.sutton_graves_k = 1.83e-4;   % Earth entry, W/m^2 with SI inputs
+    sys.reentry_vehicle.uncertainty.density_scale = 1.0;
+    sys.reentry_vehicle.uncertainty.cd_scale = 1.0;
+    sys.reentry_vehicle.uncertainty.ld_scale = 1.0;
+
+    % Paper-based reduced-order SPACEPLANE model.
+    % Zhang et al., "Entry trajectory optimization considering blackout
+    % zone communication constraint", Advances in Space Research (2026),
+    % DOI: 10.1016/j.asr.2025.11.062.
+    sys.reentry_vehicle.spaceplane.aero_model = "PAPER_RLV_POLYNOMIAL";
+    sys.reentry_vehicle.spaceplane.aoa_profile_mode = "SPEED_SCHEDULE";
+    sys.reentry_vehicle.spaceplane.aoa_speed_grid_m_s = [0, 2000, 5000, 8000];
+    sys.reentry_vehicle.spaceplane.aoa_values_deg = [15, 15, 40, 40];
+    sys.reentry_vehicle.spaceplane.cl_polynomial = [-0.041065, 0.016292, 0.0002602];
+    sys.reentry_vehicle.spaceplane.cd_from_cl_polynomial = [0.080505, -0.03026, 0.86495];
+    sys.reentry_vehicle.spaceplane.constraints.max_dynamic_pressure_Pa = 20e3;
+    sys.reentry_vehicle.spaceplane.constraints.max_g_load = 2.5;
+    sys.reentry_vehicle.spaceplane.constraints.max_heat_flux_W_m2 = 160e3;
+    sys.reentry_vehicle.spaceplane.constraints.max_bank_angle_deg = 60;
+    sys.reentry_vehicle.spaceplane.constraints.max_bank_rate_deg_s = 10;
+    sys.reentry_vehicle.spaceplane.communication.enabled = true;
+    % The paper uses [0;1;0] (upper-body boresight). AFT implements the
+    % requested rear-facing antenna while retaining the same RAAP geometry.
+    sys.reentry_vehicle.spaceplane.communication.antenna_mount = "AFT"; % AFT or PAPER_TOP
+    sys.reentry_vehicle.spaceplane.communication.paper_top_boresight_body = [0;1;0];
+    sys.reentry_vehicle.spaceplane.communication.aft_boresight_body = [-1;0;0];
+    sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg = 45;
+    sys.reentry_vehicle.spaceplane.communication.min_range_m = 0;
+    sys.reentry_vehicle.spaceplane.communication.max_range_m = inf; % set from a real link budget when available
+    sys.reentry_vehicle.spaceplane.communication.tracking_scope = "CONTINUOUS"; % CONTINUOUS or BLACKOUT_ONLY
+    sys.reentry_vehicle.spaceplane.communication.blackout_upper_altitude_m = 80e3;
+    sys.reentry_vehicle.spaceplane.communication.blackout_lower_altitude_m = 60e3;
+    sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility = true;
+
+    % Paper-based reduced-order CAPSULE model.
+    % Saito et al., "Guidance strategies for controlled Earth reentry of
+    % small spacecraft in low Earth orbit", Acta Astronautica 229 (2025),
+    % DOI: 10.1016/j.actaastro.2024.12.054.
+    % The requested 60 kg replaces the paper's 150 kg capsule mass. The
+    % paper reference area and Cd are retained explicitly.
+    sys.reentry_vehicle.capsule.mass_kg = 60;
+    % Set false when maneuver.initial_mass_kg already represents the full
+    % chaser-plus-capsule stack.
+    sys.reentry_vehicle.capsule.add_to_chaser_initial_mass = true;
+    sys.reentry_vehicle.capsule.separation_mode = "ENTRY_INTERFACE";
+    sys.reentry_vehicle.capsule.use_paper_entry_conditions = true;
+    sys.reentry_vehicle.capsule.aero_model = "PAPER_CAPSULE_REDUCED";
+    sys.reentry_vehicle.capsule.nominal_ld = 0.25; % paper range: 0.20-0.30
+    sys.reentry_vehicle.capsule.trim_aoa_deg = 0;  % surrogate: paper does not publish the Mach-10 trim angle
+    sys.reentry_vehicle.capsule.entry_interface_altitude_m = 120e3;
+    sys.reentry_vehicle.capsule.reference_entry_speed_m_s = 7.97e3;
+    sys.reentry_vehicle.capsule.reference_entry_fpa_deg = -1.16;
+    sys.reentry_vehicle.capsule.guidance_activation_drag_g = 0.20;
+    sys.reentry_vehicle.capsule.guidance_cutoff_mach = 3;
+    sys.reentry_vehicle.capsule.parachute_deploy_speed_m_s = 240;
+    sys.reentry_vehicle.capsule.density_uncertainty_fraction = 0.10;
+    sys.reentry_vehicle.capsule.cd_uncertainty_fraction = 0.20;
+    sys.reentry_vehicle.capsule.ld_bounds = [0.20, 0.30];
+    sys.reentry_vehicle.capsule.constraints.max_heat_flux_W_m2 = 1.0e6;
+    sys.reentry_vehicle.capsule.reference_total_heat_load_J_m2 = 200e6;
+    % Published reference vehicle values retained for provenance only.
+    sys.reentry_vehicle.capsule.paper_capsule_mass_kg = 150;
+    sys.reentry_vehicle.capsule.paper_spacecraft_total_mass_kg = 330;
+    sys.reentry_vehicle.capsule.paper_satellite_reference_area_m2 = 0.640;
+    sys.reentry_vehicle.capsule.paper_satellite_cd = 2.2;
 
     ld_aoa_deg = [0 2 5 8 10 12 15 18 20 22 25 30 35 40 45 50 55 60 65 70 75 80];
 
@@ -120,6 +186,19 @@ function sys = Mission_Config()
         'default_aoa_deg', 17, ...
         'ld_aoa_deg', ld_aoa_deg, ...
         'ld_values', [0.40 0.62 0.95 1.25 1.47 1.61 1.65 1.64 1.61 1.58 1.50 1.34 1.17 1.01 0.88 0.74 0.62 0.51 0.41 0.32 0.23 0.14]);
+
+    sys.reentry_vehicle.shapes.CAPSULE = struct( ...
+        'name', "Paper Capsule 60 kg", ...
+        'length_m', 0.657, ...
+        'max_width_m', 0.840, ...
+        'max_height_m', 0.840, ...
+        'base_diameter_m', 0.840, ...
+        'nose_radius_m', 0.420, ... % explicit surrogate: half diameter; paper does not state R_n
+        'reference_area_m2', 0.554, ...
+        'cd', 1.30, ...
+        'default_aoa_deg', 0, ...
+        'ld_aoa_deg', [0 90], ...
+        'ld_values', [0.25 0.25]);
 
     % Uncertainty placeholders. Active deterministic runs leave these off
     % unless a maneuver helper explicitly enables thrust noise.

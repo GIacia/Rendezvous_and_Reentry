@@ -19,10 +19,20 @@ sys = apply_pre_berthing_drag_scope_local(sys_post_berthing, run_cfg);
 warn_if_mission_json_environment_mismatch_local(mission_cfg, sys);
 
 % Budget Tracking Table
-Budget = table('Size',[0 4], 'VariableTypes',{'string','double','double','double'}, ...
-    'VariableNames',{'Phase','DeltaV_ms','Fuel_Consumed_kg','Remaining_Mass_kg'});
+Budget = table('Size',[0 5], ...
+    'VariableTypes',{'string','double','double','double','double'}, ...
+    'VariableNames',{'Phase','DeltaV_ms','Fuel_Consumed_kg', ...
+                     'Remaining_Mass_kg','Total_Accounted_Mass_kg'});
 
 m_current = sys.Chaser_Mass_Init;
+capsule_mass_added_to_initial_stack = false;
+if upper(string(sys.reentry_vehicle.vehicle_mode)) == "CAPSULE" && ...
+        sys.reentry_vehicle.capsule.add_to_chaser_initial_mass
+    m_current = m_current + sys.reentry_vehicle.capsule.mass_kg;
+    capsule_mass_added_to_initial_stack = true;
+    fprintf('Capsule stack mass: base chaser %.3f kg + capsule %.3f kg = %.3f kg\n', ...
+            sys.Chaser_Mass_Init, sys.reentry_vehicle.capsule.mass_kg, m_current);
+end
 initial_chaser_angle = get_json_angle_rad_local(mission_cfg, {'scenario','initial_chaser_angle_deg'}, 0);
 initial_phase_angle = get_json_angle_rad_local(mission_cfg, {'scenario','initial_phase_angle_deg'}, pi/2);
 initial_chaser_angle = get_run_angle_deg_local(run_cfg, {'scenario','initial_chaser_angle_deg'}, initial_chaser_angle);
@@ -94,7 +104,7 @@ phasing_mode = "CUSTOM_IMPULSE";
 [X_chaser, dV_p1, fuel_p1, hist_p1, X_target] = Phasing_Propagator(sys, X_chaser_init, target_radius, phasing_mode, custom_params, X_target, 1);
 m_current = X_chaser(14);
 
-Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current}];
+Budget = [Budget; {"Phase 1: "+phasing_mode, dV_p1, fuel_p1, m_current, m_current}];
 
 if isfield(hist_p1, 'maneuver_duration') && ~isempty(hist_p1.maneuver_duration)
     max_burn_duration_p1 = max(hist_p1.maneuver_duration);
@@ -377,7 +387,7 @@ fprintf('   Phase 2 final LVLH rel-vel = [%+.5f, %+.5f, %+.5f] m/s\n', v_final(1
 fprintf('   Phase 2 total dV: %.4f m/s, fuel: %.4f kg, elapsed: %.2f min\n', dV_p2, fuel_p2, phase2_time/60);
 
 m_current = X_chaser(14);
-Budget = [Budget; {"Phase 2: Cycloid + R-bar", dV_p2, fuel_p2, m_current}];
+Budget = [Budget; {"Phase 2: Cycloid + R-bar", dV_p2, fuel_p2, m_current, m_current}];
 
 %% 4. Phase 3: Re-entry
 fprintf('\n[Phase 3] 3-DOF re-entry simulation start...\n');
@@ -398,7 +408,13 @@ fprintf('   parking altitude: %.1f km, entry interface: %.1f km, target FPA: %.2
         sys.h_reentry/1000, sys.h_entry_interface/1000, rad2deg(sys.reentry_flight_path_angle));
 fprintf('   charge final parking -> interface injection fuel: %s\n', bool_label_local(phase3_cfg.charge_final_reentry_fuel));
 
-X_orbiting_chaser_entry_relay0 = X_chaser;
+% The entry relay is the independently orbiting target satellite. Using a
+% copy of the deorbiting chaser here would duplicate one physical vehicle.
+if numel(X_target) == 6
+    X_orbiting_entry_relay0 = [X_target(1:6); 0;0;0;1; 0;0;0; sys.Target_Mass];
+else
+    X_orbiting_entry_relay0 = X_target;
+end
 
 if reentry_mode == "HOHMANN"
     [X_chaser, X_target, dV_p3, fuel_p3, hist_p3, reentry_info] = ...
@@ -424,7 +440,7 @@ else
 end
 
 m_current = X_chaser(14);
-Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current}];
+Budget = [Budget; {"Phase 3: "+reentry_mode, dV_p3, fuel_p3, m_current, m_current}];
 
 [X_entry_interface, entry_interface_info] = entry_interface_state_from_hist_local(hist_p3, X_chaser, sys, sys.h_entry_interface);
 phase3_elapsed_to_interface = entry_interface_info.time_s;
@@ -433,18 +449,69 @@ fprintf('   selected entry interface: altitude %.3f km, FPA %.3f deg, time %.2f 
 
 fprintf('\n[Phase 4] Atmospheric re-entry from %.0f km interface...\n', sys.h_entry_interface/1000);
 entry_params = struct();
+entry_params.vehicle_mode = sys.reentry_vehicle.vehicle_mode;
 entry_params.shape_name = sys.reentry_vehicle.selected_shape;
+
+entry_stack_mass_kg = X_entry_interface(14);
+entry_capsule_mass_kg = NaN;
+entry_carrier_mass_after_kg = NaN;
+carrier_post_separation_status = "NOT_APPLICABLE";
+if upper(string(entry_params.vehicle_mode)) == "CAPSULE"
+    entry_params.shape_name = "CAPSULE";
+    entry_params.capsule_mass_kg = sys.reentry_vehicle.capsule.mass_kg;
+    entry_params.separation_mode = sys.reentry_vehicle.capsule.separation_mode;
+    entry_capsule_mass_kg = entry_params.capsule_mass_kg;
+    if ~isfinite(entry_capsule_mass_kg) || entry_capsule_mass_kg <= 0
+        error('Capsule mass must be a finite positive value.');
+    end
+    if entry_capsule_mass_kg > entry_stack_mass_kg
+        error(['Capsule mass %.3f kg exceeds the %.3f kg entry stack. ' ...
+               'The initial chaser mass ledger must include the capsule.'], ...
+              entry_capsule_mass_kg, entry_stack_mass_kg);
+    end
+    if upper(string(entry_params.separation_mode)) == "ENTRY_INTERFACE"
+        entry_carrier_mass_after_kg = entry_stack_mass_kg - entry_capsule_mass_kg;
+        X_entry_interface(14) = entry_params.capsule_mass_kg;
+        fprintf('   capsule separation at entry interface: stack %.3f kg -> capsule %.3f kg (zero separation impulse assumed)\n', ...
+                entry_stack_mass_kg, X_entry_interface(14));
+        fprintf('   residual carrier mass: %.3f kg (carrier atmospheric trajectory NOT PROPAGATED)\n', ...
+                entry_carrier_mass_after_kg);
+        carrier_post_separation_status = "NOT_PROPAGATED";
+    elseif upper(string(entry_params.separation_mode)) ~= "ATTACHED"
+        error('Unknown capsule separation_mode: %s. Use ENTRY_INTERFACE or ATTACHED.', ...
+              char(string(entry_params.separation_mode)));
+    else
+        carrier_post_separation_status = "ATTACHED_STACK_PROPAGATED";
+    end
+end
+
 [X_reentry_vehicle, ~, hist_reentry, reentry_atmo_info] = ...
-    Reentry_Propagator(sys, X_entry_interface, X_orbiting_chaser_entry_relay0, phase3_elapsed_to_interface, entry_params);
+    Reentry_Propagator(sys, X_entry_interface, X_orbiting_entry_relay0, phase3_elapsed_to_interface, entry_params);
+reentry_atmo_info.stack_mass_before_separation_kg = entry_stack_mass_kg;
+reentry_atmo_info.capsule_mass_kg = entry_capsule_mass_kg;
+reentry_atmo_info.carrier_mass_after_separation_kg = entry_carrier_mass_after_kg;
+reentry_atmo_info.carrier_post_separation_status = carrier_post_separation_status;
+reentry_atmo_info.capsule_mass_added_to_initial_stack = capsule_mass_added_to_initial_stack;
 
-Budget = [Budget; {"Phase 4: Atmospheric Entry", 0, 0, X_reentry_vehicle(14)}];
+active_vehicle_mass_kg = X_reentry_vehicle(14);
+if isfinite(entry_carrier_mass_after_kg)
+    total_accounted_mass_kg = active_vehicle_mass_kg + entry_carrier_mass_after_kg;
+else
+    total_accounted_mass_kg = active_vehicle_mass_kg;
+end
+reentry_atmo_info.active_vehicle_mass_kg = active_vehicle_mass_kg;
+reentry_atmo_info.total_accounted_mass_kg = total_accounted_mass_kg;
 
-fprintf('   shape: %s\n', char(reentry_atmo_info.shape_name));
+Budget = [Budget; {"Phase 4: Atmospheric Entry", 0, 0, ...
+                  active_vehicle_mass_kg, total_accounted_mass_kg}];
+
+fprintf('   vehicle mode: %s, shape: %s\n', ...
+        char(reentry_atmo_info.vehicle_mode), char(reentry_atmo_info.shape_name));
     fprintf('   entry duration: %.2f s, final altitude: %.2f km, termination: %s\n', ...
             reentry_atmo_info.duration_s, reentry_atmo_info.final_altitude_m/1000, ...
             char(reentry_atmo_info.termination_reason));
-    if ~reentry_atmo_info.reached_terminal_altitude
-        warning('Atmospheric entry ended without reaching the terminal altitude (reason: %s, minimum altitude: %.2f km).', ...
+    if ~reentry_atmo_info.completed_nominally
+        warning('Atmospheric entry ended without a nominal terminal event (reason: %s, minimum altitude: %.2f km).', ...
                 char(reentry_atmo_info.termination_reason), reentry_atmo_info.minimum_altitude_m/1000);
     end
     fprintf('   AoA %.2f deg, bank %.2f deg, inertial FPA %.3f -> %.3f deg\n', ...
@@ -455,6 +522,11 @@ fprintf('   shape: %s\n', char(reentry_atmo_info.shape_name));
             reentry_atmo_info.ballistic_coefficient_kg_m2);
 fprintf('   max heat flux: %.3f W/cm^2, total heat load: %.3f MJ/m^2\n', ...
         reentry_atmo_info.max_heat_flux_W_m2/1e4, reentry_atmo_info.total_heat_load_J_m2/1e6);
+if isfinite(reentry_atmo_info.reference_total_heat_load_J_m2)
+    fprintf('   paper shallow-entry heat-load reference: %.3f MJ/m^2, exceeded: %s\n', ...
+            reentry_atmo_info.reference_total_heat_load_J_m2/1e6, ...
+            char(bool_label_local(reentry_atmo_info.exceeds_reference_total_heat_load)));
+end
 fprintf('   max dynamic pressure: %.3f kPa, max aero g-load: %.3f g\n', ...
         reentry_atmo_info.max_dynamic_pressure_Pa/1e3, reentry_atmo_info.max_g_load);
 fprintf('   LOS maintained: %s, min Earth-limb clearance: %.2f km, min elevation: %.2f deg\n', ...
@@ -463,6 +535,19 @@ fprintf('   LOS maintained: %s, min Earth-limb clearance: %.2f km, min elevation
 if ~reentry_atmo_info.los_maintained
     fprintf('   first LOS loss after entry interface: %.2f s\n', reentry_atmo_info.first_los_loss_time_s);
 end
+if reentry_atmo_info.antenna_evaluated
+    fprintf('   target antenna: min/max RAAP %.2f/%.2f deg, range %.1f-%.1f km, beam half-angle %.2f deg, tracking maintained: %s\n', ...
+            reentry_atmo_info.min_raap_deg, reentry_atmo_info.max_raap_deg, ...
+            reentry_atmo_info.min_relay_range_m/1e3, reentry_atmo_info.max_relay_range_m/1e3, ...
+            reentry_atmo_info.antenna_beam_half_angle_deg, ...
+            char(bool_label_local(reentry_atmo_info.antenna_tracking_maintained)));
+    fprintf('   best bank-feasible max RAAP: %.2f deg, feasible throughout active interval: %s\n', ...
+            reentry_atmo_info.max_best_feasible_raap_deg, ...
+            char(bool_label_local(reentry_atmo_info.antenna_bank_feasible)));
+end
+if ~reentry_atmo_info.path_constraints_satisfied
+    warning('One or more paper-based re-entry path constraints were exceeded. Inspect reentry summary margins.');
+end
 
 %% 5. Summary and Output
 disp(' ');
@@ -470,7 +555,8 @@ disp('=== Final Mission Delta-V & Mass Budget ===');
 disp(Budget);
 fprintf('Total Delta-V required: %.2f m/s\n', sum(Budget.DeltaV_ms));
 fprintf('Total Fuel consumed:    %.2f kg\n', sum(Budget.Fuel_Consumed_kg));
-fprintf('Remaining mass:         %.2f kg\n', X_reentry_vehicle(14));
+fprintf('Active propagated mass: %.2f kg\n', active_vehicle_mass_kg);
+fprintf('Total accounted mass:   %.2f kg\n', total_accounted_mass_kg);
 
 % Plotting R-bar trajectory
 figure('Name','Proximity Operations','Color','w');
@@ -704,16 +790,37 @@ function sys = apply_run_config_to_sys_local(sys, run_cfg)
     sys.maneuver.max_single_burn_duration = get_run_number_field_local(run_cfg, {'maneuver','max_single_burn_duration_s'}, sys.maneuver.max_single_burn_duration);
     sys.maneuver.max_single_burn_delta_v = get_run_number_field_local(run_cfg, {'maneuver','max_single_burn_delta_v_m_s'}, sys.maneuver.max_single_burn_delta_v);
 
+    sys.reentry_vehicle.vehicle_mode = get_run_string_field_local(run_cfg, {'reentry','vehicle_mode'}, sys.reentry_vehicle.vehicle_mode);
     sys.reentry_vehicle.selected_shape = get_run_string_field_local(run_cfg, {'reentry','shape'}, sys.reentry_vehicle.selected_shape);
     sys.reentry_vehicle.dt = get_run_number_field_local(run_cfg, {'reentry','dt_s'}, sys.reentry_vehicle.dt);
     sys.reentry_vehicle.max_time = get_run_number_field_local(run_cfg, {'reentry','max_time_s'}, sys.reentry_vehicle.max_time);
     sys.reentry_vehicle.terminal_altitude = get_run_number_field_local(run_cfg, {'reentry','terminal_altitude_m'}, sys.reentry_vehicle.terminal_altitude);
     sys.reentry_vehicle.lift_enabled = get_run_bool_field_local(run_cfg, {'reentry','lift_enabled'}, sys.reentry_vehicle.lift_enabled);
+    sys.reentry_vehicle.gravity_model = get_run_string_field_local(run_cfg, {'reentry','gravity_model'}, sys.reentry_vehicle.gravity_model);
     if has_run_path_local(run_cfg, {'reentry','aoa_deg'}) && ~isempty(get_run_value_local(run_cfg, {'reentry','aoa_deg'}, []))
         sys.reentry_vehicle.aoa_deg = get_run_number_field_local(run_cfg, {'reentry','aoa_deg'}, 20);
     end
     sys.reentry_vehicle.bank_angle_deg = get_run_number_field_local(run_cfg, {'reentry','bank_angle_deg'}, sys.reentry_vehicle.bank_angle_deg);
     sys.reentry_vehicle.los_margin_altitude = get_run_number_field_local(run_cfg, {'reentry','los_margin_altitude_m'}, sys.reentry_vehicle.los_margin_altitude);
+    sys.reentry_vehicle.capsule.mass_kg = get_run_number_field_local(run_cfg, {'reentry','capsule','mass_kg'}, sys.reentry_vehicle.capsule.mass_kg);
+    sys.reentry_vehicle.capsule.add_to_chaser_initial_mass = get_run_bool_field_local(run_cfg, {'reentry','capsule','add_to_chaser_initial_mass'}, sys.reentry_vehicle.capsule.add_to_chaser_initial_mass);
+    sys.reentry_vehicle.capsule.separation_mode = get_run_string_field_local(run_cfg, {'reentry','capsule','separation_mode'}, sys.reentry_vehicle.capsule.separation_mode);
+    sys.reentry_vehicle.capsule.use_paper_entry_conditions = get_run_bool_field_local(run_cfg, {'reentry','capsule','use_paper_entry_conditions'}, sys.reentry_vehicle.capsule.use_paper_entry_conditions);
+    sys.reentry_vehicle.spaceplane.communication.enabled = get_run_bool_field_local(run_cfg, {'reentry','communication','enabled'}, sys.reentry_vehicle.spaceplane.communication.enabled);
+    sys.reentry_vehicle.spaceplane.communication.antenna_mount = get_run_string_field_local(run_cfg, {'reentry','communication','antenna_mount'}, sys.reentry_vehicle.spaceplane.communication.antenna_mount);
+    sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg = get_run_number_field_local(run_cfg, {'reentry','communication','beam_half_angle_deg'}, sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg);
+    sys.reentry_vehicle.spaceplane.communication.min_range_m = get_run_number_field_local(run_cfg, {'reentry','communication','min_range_m'}, sys.reentry_vehicle.spaceplane.communication.min_range_m);
+    sys.reentry_vehicle.spaceplane.communication.max_range_m = get_run_number_field_local(run_cfg, {'reentry','communication','max_range_m'}, sys.reentry_vehicle.spaceplane.communication.max_range_m);
+    sys.reentry_vehicle.spaceplane.communication.tracking_scope = get_run_string_field_local(run_cfg, {'reentry','communication','tracking_scope'}, sys.reentry_vehicle.spaceplane.communication.tracking_scope);
+    sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility = get_run_bool_field_local(run_cfg, {'reentry','communication','evaluate_bank_feasibility'}, sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility);
+    sys.reentry_vehicle.uncertainty.density_scale = get_run_number_field_local(run_cfg, {'reentry','uncertainty','density_scale'}, sys.reentry_vehicle.uncertainty.density_scale);
+    sys.reentry_vehicle.uncertainty.cd_scale = get_run_number_field_local(run_cfg, {'reentry','uncertainty','cd_scale'}, sys.reentry_vehicle.uncertainty.cd_scale);
+    sys.reentry_vehicle.uncertainty.ld_scale = get_run_number_field_local(run_cfg, {'reentry','uncertainty','ld_scale'}, sys.reentry_vehicle.uncertainty.ld_scale);
+    if upper(string(sys.reentry_vehicle.vehicle_mode)) == "CAPSULE" && ...
+            sys.reentry_vehicle.capsule.use_paper_entry_conditions
+        sys.h_entry_interface = sys.reentry_vehicle.capsule.entry_interface_altitude_m;
+        sys.reentry_flight_path_angle = deg2rad(abs(sys.reentry_vehicle.capsule.reference_entry_fpa_deg));
+    end
 
     if has_run_path_local(run_cfg, {'environment','atmospheric_drag'})
         drag = run_cfg.environment.atmospheric_drag;
@@ -849,7 +956,7 @@ end
 function phase3_cfg = default_phase3_config_local()
     phase3_cfg = struct();
     phase3_cfg.mode = "HOHMANN";
-    phase3_cfg.charge_final_reentry_fuel = false;
+    phase3_cfg.charge_final_reentry_fuel = true;
     phase3_cfg.target_radius_tol_m = 100;
     phase3_cfg.dt_reentry_coast_s = 2;
     phase3_cfg.max_reentry_coast_time_s = [];
@@ -1323,16 +1430,32 @@ function sys = apply_json_to_sys_local(sys, cfg)
     end
 
     if has_json_path_local(cfg, {'reentry'})
+        sys.reentry_vehicle.vehicle_mode = get_json_string_local(cfg, {'reentry','vehicle_mode'}, sys.reentry_vehicle.vehicle_mode);
         sys.reentry_vehicle.selected_shape = get_json_string_local(cfg, {'reentry','shape'}, sys.reentry_vehicle.selected_shape);
         sys.reentry_vehicle.dt = get_json_number_local(cfg, {'reentry','dt_s'}, sys.reentry_vehicle.dt);
         sys.reentry_vehicle.max_time = get_json_number_local(cfg, {'reentry','max_time_s'}, sys.reentry_vehicle.max_time);
         sys.reentry_vehicle.terminal_altitude = get_json_number_local(cfg, {'reentry','terminal_altitude_m'}, sys.reentry_vehicle.terminal_altitude);
         sys.reentry_vehicle.lift_enabled = get_json_bool_local(cfg, {'reentry','lift_enabled'}, sys.reentry_vehicle.lift_enabled);
+        sys.reentry_vehicle.gravity_model = get_json_string_local(cfg, {'reentry','gravity_model'}, sys.reentry_vehicle.gravity_model);
         if has_json_path_local(cfg, {'reentry','aoa_deg'})
             sys.reentry_vehicle.aoa_deg = get_json_number_local(cfg, {'reentry','aoa_deg'}, 20);
         end
         sys.reentry_vehicle.bank_angle_deg = get_json_number_local(cfg, {'reentry','bank_angle_deg'}, sys.reentry_vehicle.bank_angle_deg);
         sys.reentry_vehicle.los_margin_altitude = get_json_number_local(cfg, {'reentry','los_margin_altitude_m'}, sys.reentry_vehicle.los_margin_altitude);
+        sys.reentry_vehicle.capsule.mass_kg = get_json_number_local(cfg, {'reentry','capsule','mass_kg'}, sys.reentry_vehicle.capsule.mass_kg);
+        sys.reentry_vehicle.capsule.add_to_chaser_initial_mass = get_json_bool_local(cfg, {'reentry','capsule','add_to_chaser_initial_mass'}, sys.reentry_vehicle.capsule.add_to_chaser_initial_mass);
+        sys.reentry_vehicle.capsule.separation_mode = get_json_string_local(cfg, {'reentry','capsule','separation_mode'}, sys.reentry_vehicle.capsule.separation_mode);
+        sys.reentry_vehicle.capsule.use_paper_entry_conditions = get_json_bool_local(cfg, {'reentry','capsule','use_paper_entry_conditions'}, sys.reentry_vehicle.capsule.use_paper_entry_conditions);
+        sys.reentry_vehicle.spaceplane.communication.enabled = get_json_bool_local(cfg, {'reentry','communication','enabled'}, sys.reentry_vehicle.spaceplane.communication.enabled);
+        sys.reentry_vehicle.spaceplane.communication.antenna_mount = get_json_string_local(cfg, {'reentry','communication','antenna_mount'}, sys.reentry_vehicle.spaceplane.communication.antenna_mount);
+        sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg = get_json_number_local(cfg, {'reentry','communication','beam_half_angle_deg'}, sys.reentry_vehicle.spaceplane.communication.beam_half_angle_deg);
+        sys.reentry_vehicle.spaceplane.communication.min_range_m = get_json_number_local(cfg, {'reentry','communication','min_range_m'}, sys.reentry_vehicle.spaceplane.communication.min_range_m);
+        sys.reentry_vehicle.spaceplane.communication.max_range_m = get_json_number_local(cfg, {'reentry','communication','max_range_m'}, sys.reentry_vehicle.spaceplane.communication.max_range_m);
+        sys.reentry_vehicle.spaceplane.communication.tracking_scope = get_json_string_local(cfg, {'reentry','communication','tracking_scope'}, sys.reentry_vehicle.spaceplane.communication.tracking_scope);
+        sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility = get_json_bool_local(cfg, {'reentry','communication','evaluate_bank_feasibility'}, sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility);
+        sys.reentry_vehicle.uncertainty.density_scale = get_json_number_local(cfg, {'reentry','uncertainty','density_scale'}, sys.reentry_vehicle.uncertainty.density_scale);
+        sys.reentry_vehicle.uncertainty.cd_scale = get_json_number_local(cfg, {'reentry','uncertainty','cd_scale'}, sys.reentry_vehicle.uncertainty.cd_scale);
+        sys.reentry_vehicle.uncertainty.ld_scale = get_json_number_local(cfg, {'reentry','uncertainty','ld_scale'}, sys.reentry_vehicle.uncertainty.ld_scale);
     end
 end
 
@@ -1374,8 +1497,13 @@ function print_environment_config_local(sys)
     else
         fprintf('Environment: orbital atmospheric drag OFF\n');
     end
-    fprintf('Re-entry vehicle: shape %s, terminal altitude %.1f km, lift model %s, entry atmosphere ISA76\n', ...
-            char(string(sys.reentry_vehicle.selected_shape)), sys.reentry_vehicle.terminal_altitude/1000, ...
+    reentry_shape = string(sys.reentry_vehicle.selected_shape);
+    if upper(string(sys.reentry_vehicle.vehicle_mode)) == "CAPSULE"
+        reentry_shape = "CAPSULE";
+    end
+    fprintf('Re-entry vehicle: mode %s, shape %s, terminal altitude %.1f km, lift model %s, entry atmosphere ISA76\n', ...
+            char(string(sys.reentry_vehicle.vehicle_mode)), char(reentry_shape), ...
+            sys.reentry_vehicle.terminal_altitude/1000, ...
             char(bool_label_local(sys.reentry_vehicle.lift_enabled)));
 end
 
@@ -1803,7 +1931,7 @@ function [X_chaser, X_target, dV_used, fuel_used, hist, info] = run_phase3_rbar_
     [target_reentry_r, fpa_calc] = compute_reentry_target_radius_local(norm(X_chaser(1:3)), sys);
     info.fpa_calc = fpa_calc;
     info.reentry_target_radius = target_reentry_r;
-    charge_final_fuel = get_phase3_bool_param_local(custom_params, 'charge_final_reentry_fuel', false);
+    charge_final_fuel = get_phase3_bool_param_local(custom_params, 'charge_final_reentry_fuel', true);
 
     fprintf('   R_BAR_200_FPA leg 3: injection toward %.1f km / %.2f deg FPA (fuel update: %s)...\n', ...
             sys.h_entry_interface/1000, rad2deg(sys.reentry_flight_path_angle), bool_label_local(charge_final_fuel));
@@ -2409,7 +2537,9 @@ function value = parse_bool_setting_local(raw_value)
 end
 
 function label = bool_label_local(value)
-    if value
+    if isempty(value) || (isnumeric(value) && isscalar(value) && isnan(value))
+        label = "not evaluated";
+    elseif value
         label = "on";
     else
         label = "off";

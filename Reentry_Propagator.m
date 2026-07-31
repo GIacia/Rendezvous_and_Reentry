@@ -14,6 +14,7 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
     end
 
     shape = get_reentry_shape_local(sys, params);
+    vehicle_mode = string(get_shape_field_local(shape, 'vehicle_mode', "SPACEPLANE"));
     dt = get_param_local(params, 'dt', get_reentry_vehicle_field_local(sys, 'dt', 0.5));
     max_time = get_param_local(params, 'max_time', get_reentry_vehicle_field_local(sys, 'max_time', 2500));
     terminal_altitude = get_param_local(params, 'terminal_altitude', get_reentry_vehicle_field_local(sys, 'terminal_altitude', 20e3));
@@ -23,6 +24,7 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
     los_margin_altitude = get_param_local(params, 'los_margin_altitude', get_reentry_vehicle_field_local(sys, 'los_margin_altitude', 0));
     chaser_dt = get_param_local(params, 'chaser_dt', max(1, min(20, dt * 20)));
     heat_k = get_param_local(params, 'sutton_graves_k', get_reentry_vehicle_field_local(sys, 'sutton_graves_k', 1.83e-4));
+    terminal_speed = get_shape_field_local(shape, 'terminal_speed_m_s', NaN);
 
     if dt <= 0
         error('Reentry_Propagator requires positive dt.');
@@ -31,9 +33,32 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
         error('Reentry_Propagator requires positive max_time.');
     end
 
+    if numel(X_chaser_orbit0) == 6
+        relay_mass = get_struct_field_local(sys, 'Target_Mass', 1);
+        X_chaser_orbit0 = [X_chaser_orbit0(1:6); 0;0;0;1; 0;0;0; relay_mass];
+    end
     X_chaser_final = propagate_orbit_chaser_local(X_chaser_orbit0, sys, phase3_elapsed_s, chaser_dt, 0);
     X_chaser = X_chaser_final;
     X_rv = [X_entry0(1:6); X_entry0(14)];
+    if vehicle_mode == "CAPSULE"
+        separation_mode = upper(string(get_param_local(params, 'separation_mode', ...
+            get_shape_field_local(shape, 'separation_mode', "ENTRY_INTERFACE"))));
+        if separation_mode == "ENTRY_INTERFACE"
+            capsule_mass = get_param_local(params, 'capsule_mass_kg', ...
+                get_shape_field_local(shape, 'mass_kg', X_rv(7)));
+            if ~isscalar(capsule_mass) || ~isfinite(capsule_mass) || capsule_mass <= 0
+                error('Capsule separation mass must be a finite positive scalar.');
+            end
+            if capsule_mass > X_rv(7)
+                error('Capsule separation mass %.3f kg exceeds entry stack mass %.3f kg.', ...
+                      capsule_mass, X_rv(7));
+            end
+            X_rv(7) = capsule_mass;
+        elseif separation_mode ~= "ATTACHED"
+            error('Unknown capsule separation_mode: %s. Use ENTRY_INTERFACE or ATTACHED.', ...
+                  char(separation_mode));
+        end
+    end
 
     hist = init_reentry_hist_local();
     elapsed = 0;
@@ -49,17 +74,46 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
             termination_reason = "TERMINAL_ALTITUDE";
             break;
         end
+        if isfinite(terminal_speed) && aux_prev.speed_rel <= terminal_speed
+            termination_reason = "PARACHUTE_SPEED";
+            break;
+        end
 
         dt_eff = min(dt, max_time - elapsed);
         X_rv_prev = X_rv;
         X_rv_trial = rk4_reentry_step_local(X_rv_prev, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, dt_eff);
         altitude_trial = norm(X_rv_trial(1:3)) - sys.Re;
+        aux_trial = reentry_aux_local(X_rv_trial, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
 
-        if altitude_trial <= terminal_altitude
-            [X_rv, dt_advance] = refine_reentry_altitude_crossing_local( ...
+        altitude_crossed = altitude_trial <= terminal_altitude;
+        speed_crossed = isfinite(terminal_speed) && aux_trial.speed_rel <= terminal_speed;
+
+        if altitude_crossed
+            [X_altitude_cross, t_altitude_cross] = refine_reentry_altitude_crossing_local( ...
                 X_rv_prev, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, ...
                 terminal_altitude, dt_eff);
+        else
+            X_altitude_cross = [];
+            t_altitude_cross = inf;
+        end
+
+        if speed_crossed
+            [X_speed_cross, t_speed_cross] = refine_reentry_speed_crossing_local( ...
+                X_rv_prev, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, ...
+                terminal_speed, dt_eff);
+        else
+            X_speed_cross = [];
+            t_speed_cross = inf;
+        end
+
+        if isfinite(t_altitude_cross) && t_altitude_cross <= t_speed_cross
+            X_rv = X_altitude_cross;
+            dt_advance = t_altitude_cross;
             termination_reason = "TERMINAL_ALTITUDE";
+        elseif isfinite(t_speed_cross) && t_speed_cross < t_altitude_cross
+            X_rv = X_speed_cross;
+            dt_advance = t_speed_cross;
+            termination_reason = "PARACHUTE_SPEED";
         else
             X_rv = X_rv_trial;
             dt_advance = dt_eff;
@@ -74,7 +128,7 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
         [hist, aux_prev] = log_reentry_state_local(hist, X_rv, X_chaser, elapsed, heat_load, sys, shape, ...
                                                    aoa_deg, bank_angle_deg, lift_enabled, los_margin_altitude, heat_k);
 
-        if termination_reason == "TERMINAL_ALTITUDE"
+        if termination_reason == "TERMINAL_ALTITUDE" || termination_reason == "PARACHUTE_SPEED"
             break;
         end
     end
@@ -93,6 +147,9 @@ function hist = init_reentry_hist_local()
     hist.time = [];
     hist.rv_pos = [];
     hist.rv_vel = [];
+    hist.relay_pos = [];
+    hist.relay_vel = [];
+    % Deprecated aliases retained for existing plotting code.
     hist.chaser_pos = [];
     hist.chaser_vel = [];
     hist.mass = [];
@@ -109,10 +166,26 @@ function hist = init_reentry_hist_local()
     hist.g_load = [];
     hist.aoa_deg = [];
     hist.bank_angle_deg = [];
+    hist.cd = [];
+    hist.cl = [];
     hist.ld = [];
+    hist.drag_g = [];
+    hist.path_constraint_satisfied = [];
     hist.los_clear = [];
     hist.los_clearance = [];
     hist.los_elevation_deg = [];
+    hist.raap_deg = [];
+    hist.relay_range_m = [];
+    hist.antenna_constraint_active = [];
+    hist.blackout_zone_active = [];
+    hist.antenna_in_beam = [];
+    hist.antenna_within_cone = [];
+    hist.antenna_within_range = [];
+    hist.communication_geometry_available = [];
+    hist.best_feasible_raap_deg = [];
+    hist.best_feasible_bank_deg = [];
+    hist.capsule_guidance_active = [];
+    hist.capsule_guidance_window_active = [];
 end
 
 function [hist, aux] = log_reentry_state_local(hist, X_rv, X_chaser, t, heat_load, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, los_margin_altitude, heat_k)
@@ -128,10 +201,14 @@ function [hist, aux] = log_reentry_state_local(hist, X_rv, X_chaser, t, heat_loa
         chaser_pos = X_chaser(1:3);
         chaser_vel = X_chaser(4:6);
     end
+    antenna = antenna_geometry_local(X_rv, X_chaser, aux, shape, los_clear);
+    path_constraint_satisfied = path_constraints_satisfied_local(aux, shape);
 
     hist.time = [hist.time, t];
     hist.rv_pos = [hist.rv_pos, X_rv(1:3)];
     hist.rv_vel = [hist.rv_vel, X_rv(4:6)];
+    hist.relay_pos = [hist.relay_pos, chaser_pos];
+    hist.relay_vel = [hist.relay_vel, chaser_vel];
     hist.chaser_pos = [hist.chaser_pos, chaser_pos];
     hist.chaser_vel = [hist.chaser_vel, chaser_vel];
     hist.mass = [hist.mass, X_rv(7)];
@@ -146,20 +223,40 @@ function [hist, aux] = log_reentry_state_local(hist, X_rv, X_chaser, t, heat_loa
     hist.heat_flux = [hist.heat_flux, aux.heat_flux];
     hist.heat_load = [hist.heat_load, heat_load];
     hist.g_load = [hist.g_load, aux.g_load];
-    hist.aoa_deg = [hist.aoa_deg, aoa_deg];
-    hist.bank_angle_deg = [hist.bank_angle_deg, bank_angle_deg];
+    hist.aoa_deg = [hist.aoa_deg, aux.aoa_deg];
+    hist.bank_angle_deg = [hist.bank_angle_deg, aux.bank_angle_deg];
+    hist.cd = [hist.cd, aux.cd];
+    hist.cl = [hist.cl, aux.cl];
     hist.ld = [hist.ld, aux.ld];
+    hist.drag_g = [hist.drag_g, aux.drag_g];
+    hist.path_constraint_satisfied = [hist.path_constraint_satisfied, path_constraint_satisfied];
     hist.los_clear = [hist.los_clear, los_clear];
     hist.los_clearance = [hist.los_clearance, los_clearance];
     hist.los_elevation_deg = [hist.los_elevation_deg, los_elevation_deg];
+    hist.raap_deg = [hist.raap_deg, antenna.raap_deg];
+    hist.relay_range_m = [hist.relay_range_m, antenna.range_m];
+    hist.antenna_constraint_active = [hist.antenna_constraint_active, antenna.constraint_active];
+    hist.blackout_zone_active = [hist.blackout_zone_active, antenna.blackout_active];
+    hist.antenna_in_beam = [hist.antenna_in_beam, antenna.in_beam];
+    hist.antenna_within_cone = [hist.antenna_within_cone, antenna.within_cone];
+    hist.antenna_within_range = [hist.antenna_within_range, antenna.within_range];
+    hist.communication_geometry_available = [hist.communication_geometry_available, antenna.communication_available];
+    hist.best_feasible_raap_deg = [hist.best_feasible_raap_deg, antenna.best_raap_deg];
+    hist.best_feasible_bank_deg = [hist.best_feasible_bank_deg, antenna.best_bank_deg];
+    hist.capsule_guidance_active = [hist.capsule_guidance_active, aux.capsule_guidance_active];
+    hist.capsule_guidance_window_active = [hist.capsule_guidance_window_active, aux.capsule_guidance_window_active];
 end
 
 function summary = summarize_reentry_local(hist, shape, terminal_altitude, termination_reason, integration_steps)
     summary = struct();
+    summary.vehicle_mode = string(get_shape_field_local(shape, 'vehicle_mode', "SPACEPLANE"));
     summary.shape_name = string(shape.name);
+    summary.separation_mode = string(get_shape_field_local(shape, 'separation_mode', "NOT_APPLICABLE"));
     summary.duration_s = hist.time(end);
     summary.termination_reason = string(termination_reason);
     summary.reached_terminal_altitude = termination_reason == "TERMINAL_ALTITUDE";
+    summary.reached_parachute_speed = termination_reason == "PARACHUTE_SPEED";
+    summary.completed_nominally = summary.reached_terminal_altitude || summary.reached_parachute_speed;
     summary.integration_steps = integration_steps;
     summary.terminal_altitude_m = terminal_altitude;
     summary.final_altitude_m = hist.altitude(end);
@@ -171,11 +268,23 @@ function summary = summarize_reentry_local(hist, shape, terminal_altitude, termi
     summary.initial_fpa_rel_deg = hist.fpa_rel_deg(1);
     summary.final_fpa_rel_deg = hist.fpa_rel_deg(end);
     summary.aoa_deg = hist.aoa_deg(1);
+    summary.initial_aoa_deg = hist.aoa_deg(1);
+    summary.final_aoa_deg = hist.aoa_deg(end);
     summary.bank_angle_deg = hist.bank_angle_deg(1);
     summary.max_heat_flux_W_m2 = max(hist.heat_flux);
     summary.total_heat_load_J_m2 = hist.heat_load(end);
     summary.max_dynamic_pressure_Pa = max(hist.dynamic_pressure);
     summary.max_g_load = max(hist.g_load);
+    summary.max_drag_g = max(hist.drag_g);
+    summary.max_bank_rate_deg_s = max_rate_local(hist.bank_angle_deg, hist.time);
+    constraints = get_shape_field_local(shape, 'constraints', struct());
+    summary.dynamic_pressure_limit_Pa = get_struct_field_local(constraints, 'max_dynamic_pressure_Pa', inf);
+    summary.g_load_limit = get_struct_field_local(constraints, 'max_g_load', inf);
+    summary.heat_flux_limit_W_m2 = get_struct_field_local(constraints, 'max_heat_flux_W_m2', inf);
+    summary.bank_angle_limit_deg = get_struct_field_local(constraints, 'max_bank_angle_deg', inf);
+    summary.bank_rate_limit_deg_s = get_struct_field_local(constraints, 'max_bank_rate_deg_s', inf);
+    summary.path_constraints_satisfied = all(hist.path_constraint_satisfied ~= 0) && ...
+        summary.max_bank_rate_deg_s <= summary.bank_rate_limit_deg_s;
     valid_los = isfinite(hist.los_clear);
     summary.los_evaluated = any(valid_los);
     if summary.los_evaluated
@@ -198,10 +307,70 @@ function summary = summarize_reentry_local(hist, shape, terminal_altitude, termi
     cd = get_shape_field_local(shape, 'cd', 1.2);
     area = get_shape_field_local(shape, 'reference_area_m2', 1.0);
     summary.initial_mass_kg = hist.mass(1);
+    if isfinite(hist.cd(1)) && hist.cd(1) > 0
+        cd = hist.cd(1);
+    end
     summary.ballistic_coefficient_kg_m2 = hist.mass(1) / (cd * area);
-    summary.aerodynamic_model = "CONSTANT_CD_WITH_AOA_ONLY_LD";
-    summary.attitude_guidance_model = "CONSTANT_AOA_AND_BANK";
+    summary.initial_cd = hist.cd(1);
+    summary.initial_cl = hist.cl(1);
+    summary.aerodynamic_model = string(get_shape_field_local(shape, 'aero_model', "CONSTANT_CD_WITH_AOA_ONLY_LD"));
+    summary.attitude_guidance_model = string(get_shape_field_local(shape, 'aoa_profile_mode', "CONSTANT_AOA_AND_BANK"));
+    summary.gravity_model = string(get_shape_field_local(shape, 'gravity_model', "CENTRAL_SPHERICAL"));
     summary.heating_model = "SUTTON_GRAVES_CONVECTIVE_STAGNATION_POINT";
+
+    valid_raap = isfinite(hist.raap_deg);
+    active_antenna = hist.antenna_constraint_active ~= 0 & valid_raap;
+    active_blackout = hist.blackout_zone_active ~= 0 & valid_raap;
+    summary.antenna_evaluated = any(valid_raap);
+    summary.antenna_beam_half_angle_deg = get_shape_field_local(shape, 'antenna_beam_half_angle_deg', NaN);
+    summary.antenna_min_range_m = get_shape_field_local(shape, 'antenna_min_range_m', NaN);
+    summary.antenna_max_range_m = get_shape_field_local(shape, 'antenna_max_range_m', NaN);
+    if summary.antenna_evaluated
+        summary.min_raap_deg = min(hist.raap_deg(valid_raap));
+        summary.max_raap_deg = max(hist.raap_deg(valid_raap));
+        summary.min_relay_range_m = min(hist.relay_range_m(valid_raap));
+        summary.max_relay_range_m = max(hist.relay_range_m(valid_raap));
+    else
+        summary.min_raap_deg = NaN;
+        summary.max_raap_deg = NaN;
+        summary.min_relay_range_m = NaN;
+        summary.max_relay_range_m = NaN;
+    end
+    if any(active_antenna)
+        summary.antenna_tracking_maintained = all( ...
+            hist.communication_geometry_available(active_antenna) ~= 0);
+        summary.max_best_feasible_raap_deg = max(hist.best_feasible_raap_deg(active_antenna));
+        summary.antenna_bank_feasible = all( ...
+            hist.best_feasible_raap_deg(active_antenna) <= summary.antenna_beam_half_angle_deg & ...
+            hist.antenna_within_range(active_antenna) ~= 0);
+    else
+        summary.antenna_tracking_maintained = NaN;
+        summary.max_best_feasible_raap_deg = NaN;
+        summary.antenna_bank_feasible = NaN;
+    end
+    if any(active_blackout)
+        summary.bzc_constraint_evaluated = true;
+        summary.bzc_constraint_maintained = all( ...
+            hist.communication_geometry_available(active_blackout) ~= 0);
+    else
+        summary.bzc_constraint_evaluated = false;
+        summary.bzc_constraint_maintained = NaN;
+    end
+
+    summary.capsule_guidance_activation_reached = any(hist.capsule_guidance_active ~= 0);
+    summary.capsule_guidance_window_entered = any(hist.capsule_guidance_window_active ~= 0);
+    summary.reference_entry_interface_altitude_m = get_shape_field_local(shape, 'reference_entry_interface_altitude_m', NaN);
+    summary.reference_entry_speed_m_s = get_shape_field_local(shape, 'reference_entry_speed_m_s', NaN);
+    summary.reference_entry_fpa_deg = get_shape_field_local(shape, 'reference_entry_fpa_deg', NaN);
+    summary.reference_total_heat_load_J_m2 = get_shape_field_local(shape, 'reference_total_heat_load_J_m2', NaN);
+    summary.exceeds_reference_total_heat_load = isfinite(summary.reference_total_heat_load_J_m2) && ...
+        summary.total_heat_load_J_m2 > summary.reference_total_heat_load_J_m2;
+    summary.density_uncertainty_fraction = get_shape_field_local(shape, 'density_uncertainty_fraction', NaN);
+    summary.cd_uncertainty_fraction = get_shape_field_local(shape, 'cd_uncertainty_fraction', NaN);
+    summary.ld_bounds = get_shape_field_local(shape, 'ld_bounds', [NaN, NaN]);
+    summary.density_scale = get_shape_field_local(shape, 'density_scale', 1.0);
+    summary.cd_scale = get_shape_field_local(shape, 'cd_scale', 1.0);
+    summary.ld_scale = get_shape_field_local(shape, 'ld_scale', 1.0);
 end
 
 function [X_cross, t_cross] = refine_reentry_altitude_crossing_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, target_altitude, dt_window)
@@ -215,6 +384,31 @@ function [X_cross, t_cross] = refine_reentry_altitude_crossing_local(X0, sys, sh
         altitude_mid = norm(X_mid(1:3)) - sys.Re;
 
         if altitude_mid > target_altitude
+            lo = mid;
+        else
+            hi = mid;
+            X_cross = X_mid;
+        end
+
+        if hi - lo <= 1e-7
+            break;
+        end
+    end
+
+    t_cross = hi;
+end
+
+function [X_cross, t_cross] = refine_reentry_speed_crossing_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, target_speed, dt_window)
+    lo = 0;
+    hi = dt_window;
+    X_cross = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, hi);
+
+    for iter = 1:50
+        mid = 0.5 * (lo + hi);
+        X_mid = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, mid);
+        aux_mid = reentry_aux_local(X_mid, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
+
+        if aux_mid.speed_rel > target_speed
             lo = mid;
         else
             hi = mid;
@@ -251,6 +445,7 @@ function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_en
 
     atmosphere_opts = get_atmosphere_opts_local(sys);
     [rho, ~, ~, a_sound] = Standard_Atmosphere_Density(altitude, atmosphere_opts);
+    rho = rho * get_shape_field_local(shape, 'density_scale', 1.0);
 
     if get_bool_param_local(atmosphere_opts, 'co_rotate_atmosphere', true)
         omega = get_atmos_field_local(atmosphere_opts, 'earth_rotation_rad_s', 7.2921159e-5);
@@ -265,28 +460,34 @@ function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_en
     end
     v_rel = v - v_atm;
     speed_rel = norm(v_rel);
+    mach = speed_rel / max(a_sound, eps);
+    [aoa_actual_deg, bank_actual_deg] = resolve_entry_commands_local( ...
+        shape, aoa_deg, bank_angle_deg, speed_rel, mach);
 
-    a_gravity = gravity_j2_local(r, sys);
+    a_gravity = gravity_acceleration_local(r, sys, shape);
     a_aero = zeros(3,1);
     a_drag = zeros(3,1);
     a_lift = zeros(3,1);
     ld = 0;
+    cd = NaN;
+    cl = 0;
     dynamic_pressure = 0;
     heat_flux = 0;
 
     if speed_rel > 0 && rho > 0 && mass > 0
         v_rel_hat = v_rel / speed_rel;
         dynamic_pressure = 0.5 * rho * speed_rel^2;
-        cd = get_shape_field_local(shape, 'cd', 1.2);
+        [cd, cl, ld] = aerodynamic_coefficients_local(shape, aoa_actual_deg, mach);
         area = get_shape_field_local(shape, 'reference_area_m2', 1.0);
         drag_accel_mag = dynamic_pressure * cd * area / mass;
         a_drag = -drag_accel_mag * v_rel_hat;
 
         if lift_enabled
-            mach = speed_rel / max(a_sound, eps);
-            ld = lookup_ld_local(shape, aoa_deg, mach);
-            lift_dir = lift_direction_local(r, v_rel, bank_angle_deg);
+            lift_dir = lift_direction_local(r, v_rel, bank_actual_deg);
             a_lift = ld * drag_accel_mag * lift_dir;
+        else
+            cl = 0;
+            ld = 0;
         end
 
         nose_radius = max(get_shape_field_local(shape, 'nose_radius_m', 0.05), 1e-4);
@@ -295,15 +496,26 @@ function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_en
     end
 
     aux = struct();
+    aux.altitude = altitude;
     aux.rho = rho;
+    aux.v_rel = v_rel;
     aux.speed_rel = speed_rel;
     aux.fpa_deg = flight_path_angle_deg_local(r, v);
     aux.fpa_rel_deg = flight_path_angle_deg_local(r, v_rel);
-    aux.mach = speed_rel / max(a_sound, eps);
+    aux.mach = mach;
     aux.dynamic_pressure = dynamic_pressure;
     aux.heat_flux = heat_flux;
     aux.g_load = norm(a_aero) / sys.g0;
+    aux.drag_g = norm(a_drag) / sys.g0;
+    aux.aoa_deg = aoa_actual_deg;
+    aux.bank_angle_deg = bank_actual_deg;
+    aux.cd = cd;
+    aux.cl = cl;
     aux.ld = ld;
+    guidance_threshold = get_shape_field_local(shape, 'guidance_activation_drag_g', inf);
+    aux.capsule_guidance_active = aux.drag_g >= guidance_threshold;
+    guidance_cutoff_mach = get_shape_field_local(shape, 'guidance_cutoff_mach', -inf);
+    aux.capsule_guidance_window_active = aux.capsule_guidance_active && aux.mach >= guidance_cutoff_mach;
     aux.a_gravity = a_gravity;
     aux.a_aero = a_aero;
     aux.a_drag = a_drag;
@@ -317,9 +529,15 @@ function fpa_deg = flight_path_angle_deg_local(r, v)
     fpa_deg = rad2deg(atan2(v_radial, v_horizontal));
 end
 
-function a = gravity_j2_local(r, sys)
+function a = gravity_acceleration_local(r, sys, shape)
     r_norm = norm(r);
     a_g = -sys.mu / r_norm^3 * r;
+    gravity_model = upper(string(get_shape_field_local(shape, 'gravity_model', "CENTRAL_SPHERICAL")));
+    if gravity_model == "CENTRAL_SPHERICAL" || gravity_model == "CENTRAL"
+        a = a_g;
+        return;
+    end
+
     z2 = (r(3)/r_norm)^2;
     factor = 1.5 * sys.J2 * (sys.mu/r_norm^2) * (sys.Re/r_norm)^2;
     a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1);
@@ -347,6 +565,124 @@ function dir = lift_direction_local(r, v_rel, bank_angle_deg)
     bank = deg2rad(bank_angle_deg);
     dir = dir*cos(bank) + cross(vhat, dir)*sin(bank) + vhat*dot(vhat, dir)*(1-cos(bank));
     dir = dir / norm(dir);
+end
+
+function antenna = antenna_geometry_local(X_rv, X_relay, aux, shape, los_clear)
+    antenna = struct('raap_deg', NaN, 'range_m', NaN, 'constraint_active', false, ...
+                     'blackout_active', false, ...
+                     'in_beam', false, 'within_cone', false, ...
+                     'within_range', false, 'communication_available', false, ...
+                     'best_raap_deg', NaN, ...
+                     'best_bank_deg', NaN);
+    if ~get_bool_param_local(shape, 'antenna_enabled', false) || ...
+            isempty(X_relay) || numel(X_relay) < 3 || aux.speed_rel <= eps
+        return;
+    end
+
+    altitude = aux.altitude;
+
+    boresight = get_shape_field_local(shape, 'antenna_boresight_body', [-1;0;0]);
+    antenna.range_m = norm(X_relay(1:3) - X_rv(1:3));
+    antenna.raap_deg = raap_deg_local(X_rv(1:3), aux.v_rel, X_relay(1:3), ...
+                                      aux.aoa_deg, aux.bank_angle_deg, boresight);
+
+    scope = upper(string(get_shape_field_local(shape, 'antenna_tracking_scope', "CONTINUOUS")));
+    lower_alt = get_shape_field_local(shape, 'blackout_lower_altitude_m', 60e3);
+    upper_alt = get_shape_field_local(shape, 'blackout_upper_altitude_m', 80e3);
+    antenna.blackout_active = altitude >= lower_alt && altitude <= upper_alt;
+    if scope == "BLACKOUT_ONLY"
+        antenna.constraint_active = antenna.blackout_active;
+    else
+        antenna.constraint_active = true;
+    end
+
+    beam_half_angle = get_shape_field_local(shape, 'antenna_beam_half_angle_deg', 45);
+    min_range = get_shape_field_local(shape, 'antenna_min_range_m', 0);
+    max_range = get_shape_field_local(shape, 'antenna_max_range_m', inf);
+    antenna.within_cone = antenna.raap_deg <= beam_half_angle;
+    antenna.in_beam = antenna.within_cone;
+    antenna.within_range = antenna.range_m >= min_range && antenna.range_m <= max_range;
+    antenna.communication_available = antenna.within_cone && antenna.within_range && ...
+                                      isfinite(los_clear) && los_clear ~= 0;
+
+    if get_bool_param_local(shape, 'evaluate_bank_feasibility', false)
+        constraints = get_shape_field_local(shape, 'constraints', struct());
+        max_bank = get_struct_field_local(constraints, 'max_bank_angle_deg', 60);
+        bank_grid = linspace(-max_bank, max_bank, max(3, ceil(2*max_bank) + 1));
+        raap_grid = nan(size(bank_grid));
+        for ii = 1:numel(bank_grid)
+            raap_grid(ii) = raap_deg_local(X_rv(1:3), aux.v_rel, X_relay(1:3), ...
+                                           aux.aoa_deg, bank_grid(ii), boresight);
+        end
+        [antenna.best_raap_deg, idx] = min(raap_grid);
+        antenna.best_bank_deg = bank_grid(idx);
+    else
+        antenna.best_raap_deg = antenna.raap_deg;
+        antenna.best_bank_deg = aux.bank_angle_deg;
+    end
+    if ~isfinite(los_clear) || los_clear == 0
+        antenna.best_raap_deg = inf;
+    end
+end
+
+function raap_deg = raap_deg_local(r, v_rel, r_relay, aoa_deg, bank_deg, boresight_body)
+    raap_deg = NaN;
+    if norm(v_rel) <= eps || norm(r_relay - r) <= eps
+        return;
+    end
+
+    x_t = v_rel / norm(v_rel);
+    r_hat = r / norm(r);
+    y_t = r_hat - dot(r_hat, x_t) * x_t;
+    if norm(y_t) <= eps
+        return;
+    end
+    y_t = y_t / norm(y_t);
+    z_t = cross(x_t, y_t);
+    z_t = z_t / norm(z_t);
+
+    w_t = [x_t, y_t, z_t]' * (r_relay - r);
+    alpha = deg2rad(aoa_deg);
+    sigma = deg2rad(bank_deg);
+    g_alpha = [cos(alpha), sin(alpha), 0; ...
+              -sin(alpha), cos(alpha), 0; ...
+               0, 0, 1];
+    g_bank = [1, 0, 0; ...
+              0, cos(sigma), sin(sigma); ...
+              0, -sin(sigma), cos(sigma)];
+    w_body = g_alpha * g_bank * w_t;
+
+    boresight = boresight_body(:);
+    cosine = dot(boresight, w_body) / (norm(boresight) * norm(w_body));
+    raap_deg = rad2deg(acos(min(1, max(-1, cosine))));
+end
+
+function satisfied = path_constraints_satisfied_local(aux, shape)
+    constraints = get_shape_field_local(shape, 'constraints', struct());
+    max_q = get_struct_field_local(constraints, 'max_dynamic_pressure_Pa', inf);
+    max_g = get_struct_field_local(constraints, 'max_g_load', inf);
+    max_heat = get_struct_field_local(constraints, 'max_heat_flux_W_m2', inf);
+    max_bank = get_struct_field_local(constraints, 'max_bank_angle_deg', inf);
+
+    satisfied = aux.dynamic_pressure <= max_q && ...
+                aux.g_load <= max_g && ...
+                aux.heat_flux <= max_heat && ...
+                abs(aux.bank_angle_deg) <= max_bank;
+end
+
+function rate = max_rate_local(values, time)
+    if numel(values) < 2
+        rate = 0;
+        return;
+    end
+    dt = diff(time);
+    valid = dt > 0;
+    if ~any(valid)
+        rate = 0;
+    else
+        dv = abs(diff(values));
+        rate = max(dv(valid) ./ dt(valid));
+    end
 end
 
 function [clear, clearance, elevation_deg] = line_of_sight_geometry_local(r_chaser, r_rv, sys, margin_altitude)
@@ -389,10 +725,10 @@ function X_next = rk4_chaser_step_local(X, sys, dt, t_abs)
         return;
     end
 
-    k1 = Env_EOM(t_abs,          X,             [0;0;0], [0;0;0], sys, true, "chaser");
-    k2 = Env_EOM(t_abs + dt/2,   X + k1*dt/2,   [0;0;0], [0;0;0], sys, true, "chaser");
-    k3 = Env_EOM(t_abs + dt/2,   X + k2*dt/2,   [0;0;0], [0;0;0], sys, true, "chaser");
-    k4 = Env_EOM(t_abs + dt,     X + k3*dt,     [0;0;0], [0;0;0], sys, true, "chaser");
+    k1 = Env_EOM(t_abs,          X,             [0;0;0], [0;0;0], sys, true, "target");
+    k2 = Env_EOM(t_abs + dt/2,   X + k1*dt/2,   [0;0;0], [0;0;0], sys, true, "target");
+    k3 = Env_EOM(t_abs + dt/2,   X + k2*dt/2,   [0;0;0], [0;0;0], sys, true, "target");
+    k4 = Env_EOM(t_abs + dt,     X + k3*dt,     [0;0;0], [0;0;0], sys, true, "target");
     X_next = X + (dt/6) * (k1 + 2*k2 + 2*k3 + k4);
 
     if norm(X_next(7:10)) > 0
@@ -401,8 +737,18 @@ function X_next = rk4_chaser_step_local(X, sys, dt, t_abs)
 end
 
 function shape = get_reentry_shape_local(sys, params)
+    vehicle_mode = upper(get_string_param_local(params, 'vehicle_mode', ...
+        get_reentry_vehicle_field_local(sys, 'vehicle_mode', "SPACEPLANE")));
+    if vehicle_mode ~= "SPACEPLANE" && vehicle_mode ~= "CAPSULE"
+        error('Unknown re-entry vehicle_mode: %s. Use SPACEPLANE or CAPSULE.', char(vehicle_mode));
+    end
+
     default_shape = get_reentry_vehicle_field_local(sys, 'selected_shape', "COMPROMISE");
-    name = get_string_param_local(params, 'shape_name', default_shape);
+    if vehicle_mode == "CAPSULE"
+        name = "CAPSULE";
+    else
+        name = get_string_param_local(params, 'shape_name', default_shape);
+    end
     key = normalize_shape_key_local(name);
 
     if ~isfield(sys, 'reentry_vehicle') || ~isfield(sys.reentry_vehicle, 'shapes') || ...
@@ -412,6 +758,130 @@ function shape = get_reentry_shape_local(sys, params)
 
     shape = sys.reentry_vehicle.shapes.(key);
     shape.name = string(get_shape_field_local(shape, 'name', key));
+    shape.vehicle_mode = vehicle_mode;
+    shape.gravity_model = upper(get_string_param_local(params, 'gravity_model', ...
+        get_reentry_vehicle_field_local(sys, 'gravity_model', "CENTRAL_SPHERICAL")));
+    if shape.gravity_model ~= "CENTRAL_SPHERICAL" && shape.gravity_model ~= "CENTRAL" && ...
+            shape.gravity_model ~= "J2"
+        error('Unknown re-entry gravity_model: %s. Use CENTRAL_SPHERICAL or J2.', ...
+              char(shape.gravity_model));
+    end
+
+    if vehicle_mode == "SPACEPLANE"
+        cfg = sys.reentry_vehicle.spaceplane;
+        shape.aero_model = get_struct_field_local(cfg, 'aero_model', "PAPER_RLV_POLYNOMIAL");
+        shape.aoa_profile_mode = get_struct_field_local(cfg, 'aoa_profile_mode', "SPEED_SCHEDULE");
+        shape.aoa_speed_grid_m_s = get_struct_field_local(cfg, 'aoa_speed_grid_m_s', [0 2000 5000 8000]);
+        shape.aoa_values_deg = get_struct_field_local(cfg, 'aoa_values_deg', [15 15 40 40]);
+        if numel(shape.aoa_speed_grid_m_s) ~= numel(shape.aoa_values_deg) || ...
+                numel(shape.aoa_speed_grid_m_s) < 2 || ...
+                any(~isfinite(shape.aoa_speed_grid_m_s)) || ...
+                any(~isfinite(shape.aoa_values_deg)) || ...
+                any(diff(shape.aoa_speed_grid_m_s) <= 0)
+            error('SPACEPLANE AoA schedule requires finite, equal-length values on a strictly increasing speed grid.');
+        end
+        has_param_aoa_override = isfield(params, 'aoa_deg') && ~isempty(params.aoa_deg);
+        has_sys_aoa_override = isfield(sys.reentry_vehicle, 'aoa_deg') && ...
+                               ~isempty(sys.reentry_vehicle.aoa_deg);
+        if has_param_aoa_override || has_sys_aoa_override
+            shape.aoa_profile_mode = "CONSTANT_OVERRIDE";
+        end
+        shape.cl_polynomial = get_struct_field_local(cfg, 'cl_polynomial', [-0.041065 0.016292 0.0002602]);
+        shape.cd_from_cl_polynomial = get_struct_field_local(cfg, 'cd_from_cl_polynomial', [0.080505 -0.03026 0.86495]);
+        shape.constraints = get_struct_field_local(cfg, 'constraints', struct());
+
+        communication = get_struct_field_local(cfg, 'communication', struct());
+        shape.antenna_enabled = get_bool_param_local(communication, 'enabled', true);
+        antenna_mount = upper(string(get_struct_field_local(communication, 'antenna_mount', "AFT")));
+        if antenna_mount == "PAPER_TOP"
+            shape.antenna_boresight_body = get_struct_field_local(communication, 'paper_top_boresight_body', [0;1;0]);
+        elseif antenna_mount == "AFT"
+            shape.antenna_boresight_body = get_struct_field_local(communication, 'aft_boresight_body', [-1;0;0]);
+        else
+            error('Unknown antenna_mount: %s. Use AFT or PAPER_TOP.', char(antenna_mount));
+        end
+        shape.antenna_mount = antenna_mount;
+        shape.antenna_beam_half_angle_deg = get_struct_field_local(communication, 'beam_half_angle_deg', 45);
+        if ~isfinite(shape.antenna_beam_half_angle_deg) || ...
+                shape.antenna_beam_half_angle_deg < 0 || shape.antenna_beam_half_angle_deg > 180
+            error('Antenna beam_half_angle_deg must be finite and within [0, 180].');
+        end
+        if numel(shape.antenna_boresight_body) ~= 3 || ...
+                any(~isfinite(shape.antenna_boresight_body)) || norm(shape.antenna_boresight_body) <= eps
+            error('Antenna boresight must be a finite nonzero three-vector.');
+        end
+        shape.antenna_min_range_m = get_struct_field_local(communication, 'min_range_m', 0);
+        shape.antenna_max_range_m = get_struct_field_local(communication, 'max_range_m', inf);
+        if ~isscalar(shape.antenna_min_range_m) || ~isscalar(shape.antenna_max_range_m) || ...
+                ~isfinite(shape.antenna_min_range_m) || isnan(shape.antenna_max_range_m) || ...
+                shape.antenna_min_range_m < 0 || ...
+                shape.antenna_max_range_m < shape.antenna_min_range_m
+            error('Antenna range limits require 0 <= min_range_m <= max_range_m.');
+        end
+        shape.antenna_tracking_scope = upper(string(get_struct_field_local(communication, 'tracking_scope', "CONTINUOUS")));
+        if shape.antenna_tracking_scope ~= "CONTINUOUS" && ...
+                shape.antenna_tracking_scope ~= "BLACKOUT_ONLY"
+            error('Unknown antenna tracking_scope: %s. Use CONTINUOUS or BLACKOUT_ONLY.', ...
+                  char(shape.antenna_tracking_scope));
+        end
+        shape.blackout_upper_altitude_m = get_struct_field_local(communication, 'blackout_upper_altitude_m', 80e3);
+        shape.blackout_lower_altitude_m = get_struct_field_local(communication, 'blackout_lower_altitude_m', 60e3);
+        if shape.blackout_lower_altitude_m > shape.blackout_upper_altitude_m
+            error('blackout_lower_altitude_m must not exceed blackout_upper_altitude_m.');
+        end
+        shape.evaluate_bank_feasibility = get_bool_param_local(communication, 'evaluate_bank_feasibility', true);
+    else
+        cfg = sys.reentry_vehicle.capsule;
+        shape.aero_model = get_struct_field_local(cfg, 'aero_model', "PAPER_CAPSULE_REDUCED");
+        shape.aoa_profile_mode = "CONSTANT_TRIM";
+        shape.default_aoa_deg = get_struct_field_local(cfg, 'trim_aoa_deg', 0);
+        shape.nominal_ld = get_struct_field_local(cfg, 'nominal_ld', 0.25);
+        shape.mass_kg = get_struct_field_local(cfg, 'mass_kg', 60);
+        shape.separation_mode = upper(get_string_param_local(params, 'separation_mode', ...
+            get_struct_field_local(cfg, 'separation_mode', "ENTRY_INTERFACE")));
+        shape.terminal_speed_m_s = get_struct_field_local(cfg, 'parachute_deploy_speed_m_s', 240);
+        shape.guidance_activation_drag_g = get_struct_field_local(cfg, 'guidance_activation_drag_g', 0.20);
+        shape.guidance_cutoff_mach = get_struct_field_local(cfg, 'guidance_cutoff_mach', 3);
+        shape.constraints = get_struct_field_local(cfg, 'constraints', struct());
+        shape.reference_entry_interface_altitude_m = get_struct_field_local(cfg, 'entry_interface_altitude_m', 120e3);
+        shape.reference_entry_speed_m_s = get_struct_field_local(cfg, 'reference_entry_speed_m_s', 7.97e3);
+        shape.reference_entry_fpa_deg = get_struct_field_local(cfg, 'reference_entry_fpa_deg', -1.16);
+        shape.density_uncertainty_fraction = get_struct_field_local(cfg, 'density_uncertainty_fraction', 0.10);
+        shape.cd_uncertainty_fraction = get_struct_field_local(cfg, 'cd_uncertainty_fraction', 0.20);
+        shape.ld_bounds = get_struct_field_local(cfg, 'ld_bounds', [0.20, 0.30]);
+        shape.reference_total_heat_load_J_m2 = get_struct_field_local(cfg, 'reference_total_heat_load_J_m2', 200e6);
+        shape.antenna_enabled = false;
+    end
+
+    % Explicit study overrides support transparent ballistic-coefficient
+    % sensitivity cases without modifying the source vehicle database.
+    shape.reference_area_m2 = get_param_local(params, 'reference_area_m2', ...
+        get_shape_field_local(shape, 'reference_area_m2', 1.0));
+    shape.cd = get_param_local(params, 'cd', get_shape_field_local(shape, 'cd', 1.2));
+    shape.nominal_ld = get_param_local(params, 'nominal_ld', ...
+        get_shape_field_local(shape, 'nominal_ld', NaN));
+    if ~isscalar(shape.reference_area_m2) || ~isfinite(shape.reference_area_m2) || ...
+            shape.reference_area_m2 <= 0
+        error('Re-entry reference_area_m2 must be a finite positive scalar.');
+    end
+    if ~isscalar(shape.cd) || ~isfinite(shape.cd) || shape.cd <= 0
+        error('Re-entry Cd override must be a finite positive scalar.');
+    end
+    if vehicle_mode == "CAPSULE" && ...
+            (~isscalar(shape.nominal_ld) || ~isfinite(shape.nominal_ld) || shape.nominal_ld < 0)
+        error('CAPSULE nominal_ld must be a finite nonnegative scalar.');
+    end
+
+    uncertainty = get_struct_field_local(sys.reentry_vehicle, 'uncertainty', struct());
+    shape.density_scale = get_param_local(params, 'density_scale', ...
+        get_struct_field_local(uncertainty, 'density_scale', 1.0));
+    shape.cd_scale = get_param_local(params, 'cd_scale', ...
+        get_struct_field_local(uncertainty, 'cd_scale', 1.0));
+    shape.ld_scale = get_param_local(params, 'ld_scale', ...
+        get_struct_field_local(uncertainty, 'ld_scale', 1.0));
+    if shape.density_scale <= 0 || shape.cd_scale <= 0 || shape.ld_scale < 0
+        error('Re-entry density_scale and cd_scale must be positive; ld_scale must be nonnegative.');
+    end
 end
 
 function key = normalize_shape_key_local(name)
@@ -438,6 +908,49 @@ function ld = lookup_ld_local(shape, aoa_deg, ~)
     ld = max(0, ld);
 end
 
+function [aoa_deg, bank_deg] = resolve_entry_commands_local(shape, aoa_fallback_deg, bank_fallback_deg, speed_rel, mach)
+    profile_mode = upper(string(get_shape_field_local(shape, 'aoa_profile_mode', "CONSTANT")));
+    bank_deg = bank_fallback_deg;
+
+    if profile_mode == "SPEED_SCHEDULE"
+        speed_grid = get_shape_field_local(shape, 'aoa_speed_grid_m_s', [0 8000]);
+        aoa_grid = get_shape_field_local(shape, 'aoa_values_deg', [aoa_fallback_deg aoa_fallback_deg]);
+        speed_query = min(max(speed_rel, speed_grid(1)), speed_grid(end));
+        aoa_deg = interp1(speed_grid, aoa_grid, speed_query, 'linear');
+    elseif profile_mode == "MACH_SCHEDULE"
+        mach_grid = get_shape_field_local(shape, 'aoa_mach_grid', [0 30]);
+        aoa_grid = get_shape_field_local(shape, 'aoa_values_deg', [aoa_fallback_deg aoa_fallback_deg]);
+        mach_query = min(max(mach, mach_grid(1)), mach_grid(end));
+        aoa_deg = interp1(mach_grid, aoa_grid, mach_query, 'linear');
+    else
+        aoa_deg = aoa_fallback_deg;
+    end
+end
+
+function [cd, cl, ld] = aerodynamic_coefficients_local(shape, aoa_deg, mach)
+    aero_model = upper(string(get_shape_field_local(shape, 'aero_model', "LEGACY_SHAPE_LD")));
+
+    if aero_model == "PAPER_RLV_POLYNOMIAL"
+        cl_coeff = get_shape_field_local(shape, 'cl_polynomial', [-0.041065, 0.016292, 0.0002602]);
+        cd_coeff = get_shape_field_local(shape, 'cd_from_cl_polynomial', [0.080505, -0.03026, 0.86495]);
+        cl = cl_coeff(1) + cl_coeff(2)*aoa_deg + cl_coeff(3)*aoa_deg^2;
+        cl = max(0, cl);
+        cd = cd_coeff(1) + cd_coeff(2)*cl + cd_coeff(3)*cl^2;
+        cd = max(cd, 1e-6);
+        ld = cl / cd;
+    elseif aero_model == "PAPER_CAPSULE_REDUCED"
+        cd = get_shape_field_local(shape, 'cd', 1.3);
+        ld = get_shape_field_local(shape, 'nominal_ld', 0.25);
+    else
+        cd = get_shape_field_local(shape, 'cd', 1.2);
+        ld = lookup_ld_local(shape, aoa_deg, mach);
+    end
+
+    cd = cd * get_shape_field_local(shape, 'cd_scale', 1.0);
+    ld = ld * get_shape_field_local(shape, 'ld_scale', 1.0);
+    cl = cd * ld;
+end
+
 function atmosphere_opts = get_atmosphere_opts_local(sys)
     atmosphere_opts = struct();
     if isfield(sys, 'environment') && isfield(sys.environment, 'atmospheric_drag')
@@ -458,6 +971,14 @@ end
 function value = get_shape_field_local(shape, name, default_value)
     if isstruct(shape) && isfield(shape, name) && ~isempty(shape.(name))
         value = shape.(name);
+    else
+        value = default_value;
+    end
+end
+
+function value = get_struct_field_local(s, name, default_value)
+    if isstruct(s) && isfield(s, name) && ~isempty(s.(name))
+        value = s.(name);
     else
         value = default_value;
     end

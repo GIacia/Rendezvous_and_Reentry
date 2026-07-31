@@ -87,7 +87,9 @@ function run = Mission_Run_Config()
     run.phase3.parking_altitude_km = defaults.h_reentry / 1e3;
     run.phase3.entry_interface_altitude_km = defaults.h_entry_interface / 1e3;
     run.phase3.flight_path_angle_deg = rad2deg(defaults.reentry_flight_path_angle);
-    run.phase3.charge_final_reentry_fuel = false;
+    % Research default: every modeled injection is charged to the mass
+    % ledger. Set false only for an explicitly nonphysical sensitivity case.
+    run.phase3.charge_final_reentry_fuel = true;
     run.phase3.target_radius_tol_m = 100;
     run.phase3.dt_reentry_coast_s = 2;
     run.phase3.max_reentry_coast_time_s = [];
@@ -107,16 +109,37 @@ function run = Mission_Run_Config()
     run.phase3.drag_deorbit_design.max_coast_time_s = [];
 
     %% Phase 4: atmospheric entry vehicle and diagnostics
+    % SPACEPLANE uses one of the four lifting-body shapes below.
+    % CAPSULE uses the paper-based 60 kg capsule definition and ignores
+    % run.reentry.shape.
+    run.reentry.vehicle_mode = defaults.reentry_vehicle.vehicle_mode; % SPACEPLANE or CAPSULE
     run.reentry.shape = defaults.reentry_vehicle.selected_shape; % COMPROMISE, HEATLOAD_MIN, PAYLOAD_MAX, TPS_MIN
     run.reentry.dt_s = defaults.reentry_vehicle.dt;
     run.reentry.max_time_s = defaults.reentry_vehicle.max_time;
     run.reentry.terminal_altitude_m = defaults.reentry_vehicle.terminal_altitude;
     run.reentry.lift_enabled = defaults.reentry_vehicle.lift_enabled;
-    % Leave aoa_deg = [] to use the selected shape default. The current
-    % entry model holds AoA and bank angle constant during propagation.
+    run.reentry.gravity_model = defaults.reentry_vehicle.gravity_model;
+    % Leave aoa_deg = [] to use the selected vehicle model. SPACEPLANE then
+    % uses the paper speed-based AoA schedule; a scalar override forces a
+    % constant AoA. Bank remains an open-loop constant in this version.
     run.reentry.aoa_deg = [];
     run.reentry.bank_angle_deg = defaults.reentry_vehicle.bank_angle_deg;
     run.reentry.los_margin_altitude_m = defaults.reentry_vehicle.los_margin_altitude;
+    run.reentry.capsule.mass_kg = defaults.reentry_vehicle.capsule.mass_kg;
+    run.reentry.capsule.add_to_chaser_initial_mass = defaults.reentry_vehicle.capsule.add_to_chaser_initial_mass;
+    run.reentry.capsule.separation_mode = defaults.reentry_vehicle.capsule.separation_mode;
+    run.reentry.capsule.use_paper_entry_conditions = defaults.reentry_vehicle.capsule.use_paper_entry_conditions;
+    run.reentry.communication.enabled = defaults.reentry_vehicle.spaceplane.communication.enabled;
+    run.reentry.communication.antenna_mount = defaults.reentry_vehicle.spaceplane.communication.antenna_mount;
+    run.reentry.communication.beam_half_angle_deg = defaults.reentry_vehicle.spaceplane.communication.beam_half_angle_deg;
+    run.reentry.communication.min_range_m = defaults.reentry_vehicle.spaceplane.communication.min_range_m;
+    run.reentry.communication.max_range_m = defaults.reentry_vehicle.spaceplane.communication.max_range_m;
+    run.reentry.communication.tracking_scope = defaults.reentry_vehicle.spaceplane.communication.tracking_scope;
+    run.reentry.communication.evaluate_bank_feasibility = defaults.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility;
+    % Paper sensitivity cases can be reproduced with 0.9 and 1.1.
+    run.reentry.uncertainty.density_scale = defaults.reentry_vehicle.uncertainty.density_scale;
+    run.reentry.uncertainty.cd_scale = defaults.reentry_vehicle.uncertainty.cd_scale;
+    run.reentry.uncertainty.ld_scale = defaults.reentry_vehicle.uncertainty.ld_scale;
 
     %% Environment
     % apply_from_phase:

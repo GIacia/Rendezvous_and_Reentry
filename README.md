@@ -91,6 +91,26 @@ run.environment.atmospheric_drag.enabled = true;
 run.environment.atmospheric_drag.apply_from_phase = "PHASE3";
 ```
 
+Paper-based atmospheric-entry modes can be selected directly:
+
+```matlab
+% RLV polynomial aerodynamics, speed-scheduled AoA, and target-relay
+% antenna/path-constraint diagnostics.
+run.reentry.vehicle_mode = "SPACEPLANE";
+run.reentry.communication.antenna_mount = "AFT"; % or PAPER_TOP
+% Optional only after a link-budget-derived range is available:
+run.reentry.communication.max_range_m = inf;
+
+% 60 kg capsule separated at the 120 km entry interface, with the paper
+% reference FPA and parachute-speed terminal event.
+run.reentry.vehicle_mode = "CAPSULE";
+run.reentry.capsule.separation_mode = "ENTRY_INTERFACE";
+run.reentry.capsule.add_to_chaser_initial_mass = true;
+```
+
+See `docs/REENTRY_PAPER_MODELS.md` for the implemented equations, paper
+values, uncertainty scales, and the boundary between diagnostics and guidance.
+
 The entry attitude inputs are intentionally simple in the current model:
 `run.reentry.aoa_deg = []` uses the selected shape's default AoA, and
 `run.reentry.bank_angle_deg` is held constant during atmospheric entry. The
@@ -211,7 +231,7 @@ update is controlled independently. The default is `false`; to include that burn
 in the propellant and remaining-mass budget:
 
 ```matlab
-run.phase3.charge_final_reentry_fuel = true;
+run.phase3.charge_final_reentry_fuel = true; % research default
 Main_Mission_Simulator
 ```
 
@@ -270,7 +290,7 @@ Phase 3 is selected with `run.phase3.mode` in `Mission_Run_Config.m`.
 Current modes:
 
 - `HOHMANN`: performs a direct FPA-targeted de-orbit injection and stops at `run.phase3.entry_interface_altitude_km`. It no longer performs a nonphysical circularization after crossing the interface.
-- `R_BAR_200_FPA`: first lowers from the station orbit region to `run.phase3.parking_altitude_km`, waits until the vehicle is below the target on the target R-bar, then performs a final injection to `run.phase3.entry_interface_altitude_km` using the configured FPA geometry. The final injection delta-V is always reported; its propellant can be included or excluded with `run.phase3.charge_final_reentry_fuel`.
+- `R_BAR_200_FPA`: first lowers from the station orbit region to `run.phase3.parking_altitude_km`, waits until the vehicle is below the target on the target R-bar, then performs a final injection to `run.phase3.entry_interface_altitude_km` using the configured FPA geometry. The final injection delta-V and propellant are included by default; disabling `run.phase3.charge_final_reentry_fuel` is an explicitly nonphysical mass-ledger sensitivity option.
 
 Both modes still use the same post-run check of the actual flight-path angle near the configured entry-interface altitude.
 
