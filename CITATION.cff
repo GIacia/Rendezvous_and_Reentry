@@ -1,0 +1,57 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite this repository and the source
+  paper or papers relevant to the model components you use.
+title: "Rendezvous and Reentry Mission Simulator"
+type: software
+authors:
+  - name: "GIacia"
+    website: "https://github.com/GIacia"
+repository-code: "https://github.com/GIacia/Rendezvous_and_Reentry"
+url: "https://github.com/GIacia/Rendezvous_and_Reentry"
+license: "BSD-3-Clause"
+abstract: >-
+  A MATLAB mission-level simulator for unmanned orbital rendezvous, de-orbit,
+  and atmospheric re-entry, with standalone provenance-aware studies of
+  selected Zhang and Saito paper models.
+keywords:
+  - rendezvous
+  - re-entry
+  - spacecraft
+  - trajectory simulation
+  - MATLAB
+references:
+  - type: article
+    title: "Entry trajectory optimization considering blackout zone communication constraint"
+    authors:
+      - family-names: "Zhang"
+        given-names: "Rouhe"
+      - family-names: "Wang"
+        given-names: "Kang"
+      - family-names: "Duan"
+        given-names: "Xinran"
+      - family-names: "Chen"
+        given-names: "Zheng"
+    journal: "Advances in Space Research"
+    volume: 77
+    start: 11407
+    end: 11417
+    year: 2026
+    doi: "10.1016/j.asr.2025.11.062"
+  - type: article
+    title: "Guidance strategies for controlled Earth reentry of small spacecraft in low Earth orbit"
+    authors:
+      - family-names: "Saito"
+        given-names: "Takumi"
+      - family-names: "Kuwahara"
+        given-names: "Toshinori"
+      - family-names: "Saito"
+        given-names: "Yuji"
+      - family-names: "Sato"
+        given-names: "Yuji"
+    journal: "Acta Astronautica"
+    volume: 229
+    start: 684
+    end: 697
+    year: 2025
+    doi: "10.1016/j.actaastro.2024.12.054"

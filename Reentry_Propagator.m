@@ -24,19 +24,60 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
     los_margin_altitude = get_param_local(params, 'los_margin_altitude', get_reentry_vehicle_field_local(sys, 'los_margin_altitude', 0));
     chaser_dt = get_param_local(params, 'chaser_dt', max(1, min(20, dt * 20)));
     heat_k = get_param_local(params, 'sutton_graves_k', get_reentry_vehicle_field_local(sys, 'sutton_graves_k', 1.83e-4));
+    paper_tdrs_entry_epoch_s = get_param_local(params, ...
+        'paper_tdrs_entry_epoch_s', phase3_elapsed_s);
     terminal_speed = get_shape_field_local(shape, 'terminal_speed_m_s', NaN);
     altitude_termination_enabled = get_bool_param_local(shape, 'altitude_termination_enabled', true);
     safety_floor_altitude = get_shape_field_local(shape, 'safety_floor_altitude_m', 0);
     relay_mode = upper(string(get_shape_field_local(shape, 'relay_mode', "MISSION_TARGET_DYNAMIC_ORBIT")));
 
-    if dt <= 0
-        error('Reentry_Propagator requires positive dt.');
-    end
-    if max_time <= 0
-        error('Reentry_Propagator requires positive max_time.');
-    end
+    validate_finite_scalar_local(phase3_elapsed_s, ...
+        'phase3_elapsed_s', 0, true);
+    validate_finite_scalar_local(dt, 'dt', 0, false);
+    validate_finite_scalar_local(max_time, 'max_time', 0, false);
+    validate_finite_scalar_local(terminal_altitude, ...
+        'terminal_altitude', -inf, true);
+    validate_finite_scalar_local(aoa_deg, 'aoa_deg', -inf, true);
+    validate_finite_scalar_local(bank_angle_deg, ...
+        'bank_angle_deg', -inf, true);
+    validate_finite_scalar_local(los_margin_altitude, ...
+        'los_margin_altitude', -inf, true);
+    validate_finite_scalar_local(chaser_dt, 'chaser_dt', 0, false);
+    validate_finite_scalar_local(heat_k, 'sutton_graves_k', 0, true);
+    validate_finite_scalar_local(paper_tdrs_entry_epoch_s, ...
+        'paper_tdrs_entry_epoch_s', 0, true);
     if ~isscalar(safety_floor_altitude) || ~isfinite(safety_floor_altitude)
         error('Reentry safety_floor_altitude_m must be a finite scalar.');
+    end
+    if ~isnumeric(X_entry0) || ~isreal(X_entry0) || numel(X_entry0) < 14 || ...
+            any(~isfinite(X_entry0(1:6))) || ...
+            ~isfinite(X_entry0(14)) || X_entry0(14) <= 0 || ...
+            norm(X_entry0(1:3)) <= 0
+        error(['X_entry0 must contain finite position/velocity values and ' ...
+               'a finite positive mass in element 14.']);
+    end
+    if ~isempty(X_chaser_orbit0) && ...
+            (~isnumeric(X_chaser_orbit0) || ...
+             ~isreal(X_chaser_orbit0) || ...
+             ~any(numel(X_chaser_orbit0) == [6, 14]) || ...
+             any(~isfinite(X_chaser_orbit0(1:6))))
+        error('X_chaser_orbit0 must be empty or a finite 6/14-element state.');
+    end
+    if numel(X_chaser_orbit0) == 14 && ...
+            (~isfinite(X_chaser_orbit0(14)) || X_chaser_orbit0(14) <= 0)
+        error('A 14-element X_chaser_orbit0 state requires positive finite mass.');
+    end
+    X_entry0 = X_entry0(:);
+    if ~isempty(X_chaser_orbit0)
+        X_chaser_orbit0 = X_chaser_orbit0(:);
+    end
+    if isfinite(terminal_speed) && terminal_speed <= 0
+        error('Re-entry terminal_speed_m_s must be positive when enabled.');
+    end
+    if relay_mode == "PAPER_TDRS_STATIC_EARTH_FIXED"
+        shape.paper_tdrs_entry_epoch_s = paper_tdrs_entry_epoch_s;
+    else
+        shape.paper_tdrs_entry_epoch_s = NaN;
     end
 
     if numel(X_chaser_orbit0) == 6
@@ -44,7 +85,8 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
         X_chaser_orbit0 = [X_chaser_orbit0(1:6); 0;0;0;1; 0;0;0; relay_mass];
     end
     if relay_mode == "PAPER_TDRS_STATIC_EARTH_FIXED"
-        X_chaser_final = paper_tdrs_state_local(sys, shape, phase3_elapsed_s);
+        X_chaser_final = paper_tdrs_state_local( ...
+            sys, shape, paper_tdrs_entry_epoch_s);
     else
         X_chaser_final = propagate_orbit_chaser_local(X_chaser_orbit0, sys, phase3_elapsed_s, chaser_dt, 0);
     end
@@ -143,7 +185,7 @@ function [X_rv_final, X_chaser_final, hist, summary] = Reentry_Propagator(sys, X
 
         if relay_mode == "PAPER_TDRS_STATIC_EARTH_FIXED"
             X_chaser = paper_tdrs_state_local( ...
-                sys, shape, phase3_elapsed_s + elapsed + dt_advance);
+                sys, shape, paper_tdrs_entry_epoch_s + elapsed + dt_advance);
         else
             X_chaser = rk4_chaser_step_local( ...
                 X_chaser, sys, dt_advance, phase3_elapsed_s + elapsed);
@@ -339,18 +381,24 @@ function summary = summarize_reentry_local(hist, shape, terminal_altitude, termi
     summary.evaluated_path_constraints_satisfied = all(hist.path_constraint_satisfied ~= 0) && ...
         summary.max_bank_rate_deg_s <= summary.bank_rate_limit_deg_s;
     summary.heat_constraint_comparable = get_bool_param_local(shape, 'heat_constraint_comparable', true);
-    summary.heat_constraint_evaluated = isfinite(summary.heat_flux_limit_W_m2) && ...
+    summary.heat_constraint_required = get_bool_param_local(shape, ...
+        'heat_constraint_required', isfinite(summary.heat_flux_limit_W_m2));
+    summary.heat_constraint_evaluated = summary.heat_constraint_required && ...
+        isfinite(summary.heat_flux_limit_W_m2) && ...
         summary.heat_constraint_comparable;
-    summary.surrogate_heat_below_reference_limit = ...
-        ~isfinite(summary.heat_flux_limit_W_m2) || ...
-        summary.max_heat_flux_W_m2 <= summary.heat_flux_limit_W_m2;
+    if isfinite(summary.heat_flux_limit_W_m2)
+        summary.surrogate_heat_below_reference_limit = ...
+            summary.max_heat_flux_W_m2 <= summary.heat_flux_limit_W_m2;
+    else
+        summary.surrogate_heat_below_reference_limit = NaN;
+    end
     if summary.heat_constraint_evaluated
         summary.heat_constraint_satisfied = summary.surrogate_heat_below_reference_limit;
     else
         summary.heat_constraint_satisfied = NaN;
     end
     summary.path_constraints_fully_evaluated = ...
-        ~isfinite(summary.heat_flux_limit_W_m2) || summary.heat_constraint_evaluated;
+        ~summary.heat_constraint_required || summary.heat_constraint_evaluated;
     if ~summary.evaluated_path_constraints_satisfied
         summary.path_constraints_satisfied = false;
     elseif summary.path_constraints_fully_evaluated
@@ -391,7 +439,20 @@ function summary = summarize_reentry_local(hist, shape, terminal_altitude, termi
     summary.gravity_model = string(get_shape_field_local(shape, 'gravity_model', "CENTRAL_SPHERICAL"));
     summary.heating_model = string(get_shape_field_local(shape, 'heating_model', "SUTTON_GRAVES_SURROGATE"));
     summary.paper_heating_model = string(get_shape_field_local(shape, 'paper_heating_model', "NOT_SPECIFIED"));
+    summary.paper_heat_limit_table_value = get_shape_field_local( ...
+        shape, 'paper_heat_limit_table_value', NaN);
+    summary.paper_heat_limit_table_unit = string(get_shape_field_local( ...
+        shape, 'paper_heat_limit_table_unit', "NOT_SPECIFIED"));
+    summary.paper_heat_limit_figure_approx_W_m2 = get_shape_field_local( ...
+        shape, 'paper_heat_limit_figure_approx_W_m2', NaN);
+    summary.paper_heat_limit_internally_consistent = get_bool_param_local( ...
+        shape, 'paper_heat_limit_internally_consistent', false);
     summary.relay_mode = string(get_shape_field_local(shape, 'relay_mode', "MISSION_TARGET_DYNAMIC_ORBIT"));
+    summary.paper_tdrs_entry_epoch_s = get_shape_field_local( ...
+        shape, 'paper_tdrs_entry_epoch_s', NaN);
+    summary.earth_fixed_to_eci_angle_at_mission_epoch_deg = ...
+        get_shape_field_local(shape, ...
+            'earth_fixed_to_eci_angle_at_mission_epoch_deg', NaN);
     summary.paper_initial_altitude_m = get_shape_field_local(shape, 'paper_initial_altitude_m', NaN);
     summary.paper_terminal_altitude_m = get_shape_field_local(shape, 'paper_terminal_altitude_m', NaN);
     summary.paper_terminal_speed_m_s = get_shape_field_local(shape, 'paper_terminal_speed_m_s', NaN);
@@ -537,197 +598,25 @@ function summary = summarize_reentry_local(hist, shape, terminal_altitude, termi
 end
 
 function [X_cross, t_cross] = refine_reentry_altitude_crossing_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, target_altitude, dt_window)
-    lo = 0;
-    hi = dt_window;
-    X_cross = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, hi);
-
-    for iter = 1:50
-        mid = 0.5 * (lo + hi);
-        X_mid = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, mid);
-        altitude_mid = norm(X_mid(1:3)) - sys.Re;
-
-        if altitude_mid > target_altitude
-            lo = mid;
-        else
-            hi = mid;
-            X_cross = X_mid;
-        end
-
-        if hi - lo <= 1e-7
-            break;
-        end
-    end
-
-    t_cross = hi;
+    [X_cross, t_cross] = reentry_core.refine_altitude_crossing( ...
+        X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, ...
+        target_altitude, dt_window);
 end
 
 function [X_cross, t_cross] = refine_reentry_speed_crossing_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, target_speed, dt_window)
-    lo = 0;
-    hi = dt_window;
-    X_cross = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, hi);
-
-    for iter = 1:50
-        mid = 0.5 * (lo + hi);
-        X_mid = rk4_reentry_step_local(X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, mid);
-        aux_mid = reentry_aux_local(X_mid, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
-
-        if aux_mid.speed_rel > target_speed
-            lo = mid;
-        else
-            hi = mid;
-            X_cross = X_mid;
-        end
-
-        if hi - lo <= 1e-7
-            break;
-        end
-    end
-
-    t_cross = hi;
+    [X_cross, t_cross] = reentry_core.refine_speed_crossing( ...
+        X0, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, ...
+        target_speed, dt_window);
 end
 
 function X_next = rk4_reentry_step_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, dt)
-    f = @(X_now) reentry_dynamics_local(X_now, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
-    k1 = f(X);
-    k2 = f(X + 0.5 * dt * k1);
-    k3 = f(X + 0.5 * dt * k2);
-    k4 = f(X + dt * k3);
-    X_next = X + (dt/6) * (k1 + 2*k2 + 2*k3 + k4);
-end
-
-function dX = reentry_dynamics_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k)
-    aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
-    dX = [X(4:6); aux.a_gravity + aux.a_aero; 0];
+    X_next = reentry_core.rk4_step( ...
+        X, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k, dt);
 end
 
 function aux = reentry_aux_local(X, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k)
-    r = X(1:3);
-    v = X(4:6);
-    mass = X(7);
-    altitude = norm(r) - sys.Re;
-
-    atmosphere_opts = get_atmosphere_opts_local(sys);
-    [rho, ~, ~, a_sound] = Standard_Atmosphere_Density(altitude, atmosphere_opts);
-    rho = rho * get_shape_field_local(shape, 'density_scale', 1.0);
-
-    if get_bool_param_local(atmosphere_opts, 'co_rotate_atmosphere', true)
-        omega = get_atmos_field_local(atmosphere_opts, 'earth_rotation_rad_s', 7.2921159e-5);
-        if isscalar(omega)
-            omega_vec = [0;0;omega];
-        else
-            omega_vec = omega(:);
-        end
-        v_atm = cross(omega_vec, r);
-    else
-        v_atm = zeros(3,1);
-    end
-    v_rel = v - v_atm;
-    speed_rel = norm(v_rel);
-    mach = speed_rel / max(a_sound, eps);
-    [aoa_actual_deg, bank_actual_deg] = resolve_entry_commands_local( ...
-        shape, aoa_deg, bank_angle_deg, speed_rel, mach);
-
-    a_gravity = gravity_acceleration_local(r, sys, shape);
-    a_aero = zeros(3,1);
-    a_drag = zeros(3,1);
-    a_lift = zeros(3,1);
-    ld = 0;
-    cd = NaN;
-    cl = 0;
-    dynamic_pressure = 0;
-    heat_flux = 0;
-
-    if speed_rel > 0 && rho > 0 && mass > 0
-        v_rel_hat = v_rel / speed_rel;
-        dynamic_pressure = 0.5 * rho * speed_rel^2;
-        [cd, cl, ld] = aerodynamic_coefficients_local(shape, aoa_actual_deg, mach);
-        area = get_shape_field_local(shape, 'reference_area_m2', 1.0);
-        drag_accel_mag = dynamic_pressure * cd * area / mass;
-        a_drag = -drag_accel_mag * v_rel_hat;
-
-        if lift_enabled
-            lift_dir = lift_direction_local(r, v_rel, bank_actual_deg);
-            a_lift = ld * drag_accel_mag * lift_dir;
-        else
-            cl = 0;
-            ld = 0;
-        end
-
-        nose_radius = max(get_shape_field_local(shape, 'nose_radius_m', 0.05), 1e-4);
-        heat_flux = heat_k * sqrt(rho / nose_radius) * speed_rel^3;
-        a_aero = a_drag + a_lift;
-    end
-
-    aux = struct();
-    aux.altitude = altitude;
-    aux.rho = rho;
-    aux.v_rel = v_rel;
-    aux.speed_rel = speed_rel;
-    aux.fpa_deg = flight_path_angle_deg_local(r, v);
-    aux.fpa_rel_deg = flight_path_angle_deg_local(r, v_rel);
-    aux.mach = mach;
-    aux.dynamic_pressure = dynamic_pressure;
-    aux.heat_flux = heat_flux;
-    aux.g_load = norm(a_aero) / sys.g0;
-    aux.drag_g = norm(a_drag) / sys.g0;
-    aux.aoa_deg = aoa_actual_deg;
-    aux.bank_angle_deg = bank_actual_deg;
-    aux.cd = cd;
-    aux.cl = cl;
-    aux.ld = ld;
-    guidance_threshold = get_shape_field_local(shape, 'guidance_activation_drag_g', inf);
-    aux.capsule_guidance_active = aux.drag_g >= guidance_threshold;
-    guidance_cutoff_mach = get_shape_field_local(shape, 'guidance_cutoff_mach', -inf);
-    aux.capsule_guidance_window_active = aux.capsule_guidance_active && aux.mach >= guidance_cutoff_mach;
-    aux.a_gravity = a_gravity;
-    aux.a_aero = a_aero;
-    aux.a_drag = a_drag;
-    aux.a_lift = a_lift;
-end
-
-function fpa_deg = flight_path_angle_deg_local(r, v)
-    r_hat = r / norm(r);
-    v_radial = dot(v, r_hat);
-    v_horizontal = norm(v - v_radial * r_hat);
-    fpa_deg = rad2deg(atan2(v_radial, v_horizontal));
-end
-
-function a = gravity_acceleration_local(r, sys, shape)
-    r_norm = norm(r);
-    a_g = -sys.mu / r_norm^3 * r;
-    gravity_model = upper(string(get_shape_field_local(shape, 'gravity_model', "CENTRAL_SPHERICAL")));
-    if gravity_model == "CENTRAL_SPHERICAL" || gravity_model == "CENTRAL"
-        a = a_g;
-        return;
-    end
-
-    z2 = (r(3)/r_norm)^2;
-    factor = 1.5 * sys.J2 * (sys.mu/r_norm^2) * (sys.Re/r_norm)^2;
-    a_j2 = factor * [ (r(1)/r_norm)*(5*z2 - 1);
-                      (r(2)/r_norm)*(5*z2 - 1);
-                      (r(3)/r_norm)*(5*z2 - 3) ];
-    a = a_g + a_j2;
-end
-
-function dir = lift_direction_local(r, v_rel, bank_angle_deg)
-    dir = zeros(3,1);
-    h = cross(r, v_rel);
-    if norm(h) <= eps || norm(v_rel) <= eps
-        return;
-    end
-
-    vhat = v_rel / norm(v_rel);
-    hhat = h / norm(h);
-    dir = cross(vhat, hhat);
-    if norm(dir) <= eps
-        dir = zeros(3,1);
-        return;
-    end
-    dir = dir / norm(dir);
-
-    bank = deg2rad(bank_angle_deg);
-    dir = dir*cos(bank) + cross(vhat, dir)*sin(bank) + vhat*dot(vhat, dir)*(1-cos(bank));
-    dir = dir / norm(dir);
+    aux = reentry_core.evaluate_state( ...
+        X, sys, shape, aoa_deg, bank_angle_deg, lift_enabled, heat_k);
 end
 
 function [blackout_active, constraint_active, phase] = ...
@@ -768,12 +657,15 @@ function [blackout_active, constraint_active, phase] = ...
         elseif phase == 0 && descending && ...
                 aux.altitude <= upper_alt && aux.altitude >= lower_alt
             phase = 1;
-        elseif phase == 0 && descending && aux.altitude < lower_alt
+        elseif phase == 0 && aux.altitude < lower_alt
             % A coarse integration step may skip the whole sampled band.
             % No BZC sample can be reconstructed, but terminal phase 2
             % prevents a later spurious reactivation.
             phase = 2;
-        elseif phase == 1 && descending && aux.altitude < lower_alt
+        elseif phase == 1 && aux.altitude < lower_alt
+            % Once phase 1 has been observed, a later sample below the
+            % lower boundary proves that the first downward exit occurred,
+            % even if the coarse endpoint is already ascending again.
             phase = 2;
         end
         blackout_active = phase == 1;
@@ -788,87 +680,8 @@ function [blackout_active, constraint_active, phase] = ...
 end
 
 function antenna = antenna_geometry_local(X_rv, X_relay, aux, shape, los_clear)
-    antenna = struct('raap_deg', NaN, 'range_m', NaN, 'constraint_active', false, ...
-                     'blackout_active', false, ...
-                     'in_beam', false, 'within_cone', false, ...
-                     'within_range', false, 'communication_available', false, ...
-                     'best_raap_deg', NaN, ...
-                     'best_bank_deg', NaN);
-    if ~get_bool_param_local(shape, 'antenna_enabled', false)
-        return;
-    end
-
-    if isempty(X_relay) || numel(X_relay) < 3 || aux.speed_rel <= eps
-        return;
-    end
-
-    boresight = get_shape_field_local(shape, 'antenna_boresight_body', [-1;0;0]);
-    antenna.range_m = norm(X_relay(1:3) - X_rv(1:3));
-    antenna.raap_deg = raap_deg_local(X_rv(1:3), aux.v_rel, X_relay(1:3), ...
-                                      aux.aoa_deg, aux.bank_angle_deg, boresight);
-
-    beam_half_angle = get_shape_field_local(shape, 'antenna_beam_half_angle_deg', 45);
-    angle_tolerance = get_shape_field_local(shape, 'antenna_angle_tolerance_deg', 1e-10);
-    min_range = get_shape_field_local(shape, 'antenna_min_range_m', 0);
-    max_range = get_shape_field_local(shape, 'antenna_max_range_m', inf);
-    antenna.within_cone = antenna.raap_deg <= beam_half_angle + angle_tolerance;
-    antenna.in_beam = antenna.within_cone;
-    antenna.within_range = antenna.range_m >= min_range && antenna.range_m <= max_range;
-    antenna.communication_available = antenna.within_cone && antenna.within_range && ...
-                                      isfinite(los_clear) && los_clear ~= 0;
-
-    bank_scan_enabled = get_bool_param_local(shape, ...
-        'evaluate_bank_feasibility', false);
-    if bank_scan_enabled
-        constraints = get_shape_field_local(shape, 'constraints', struct());
-        max_bank = get_struct_field_local(constraints, 'max_bank_angle_deg', 60);
-        bank_grid = linspace(-max_bank, max_bank, max(3, ceil(2*max_bank) + 1));
-        raap_grid = nan(size(bank_grid));
-        for ii = 1:numel(bank_grid)
-            raap_grid(ii) = raap_deg_local(X_rv(1:3), aux.v_rel, X_relay(1:3), ...
-                                           aux.aoa_deg, bank_grid(ii), boresight);
-        end
-        [antenna.best_raap_deg, idx] = min(raap_grid);
-        antenna.best_bank_deg = bank_grid(idx);
-    else
-        antenna.best_raap_deg = NaN;
-        antenna.best_bank_deg = NaN;
-    end
-    if bank_scan_enabled && (~isfinite(los_clear) || los_clear == 0)
-        antenna.best_raap_deg = inf;
-    end
-end
-
-function raap_deg = raap_deg_local(r, v_rel, r_relay, aoa_deg, bank_deg, boresight_body)
-    raap_deg = NaN;
-    if norm(v_rel) <= eps || norm(r_relay - r) <= eps
-        return;
-    end
-
-    x_t = v_rel / norm(v_rel);
-    r_hat = r / norm(r);
-    y_t = r_hat - dot(r_hat, x_t) * x_t;
-    if norm(y_t) <= eps
-        return;
-    end
-    y_t = y_t / norm(y_t);
-    z_t = cross(x_t, y_t);
-    z_t = z_t / norm(z_t);
-
-    w_t = [x_t, y_t, z_t]' * (r_relay - r);
-    alpha = deg2rad(aoa_deg);
-    sigma = deg2rad(bank_deg);
-    g_alpha = [cos(alpha), sin(alpha), 0; ...
-              -sin(alpha), cos(alpha), 0; ...
-               0, 0, 1];
-    g_bank = [1, 0, 0; ...
-              0, cos(sigma), sin(sigma); ...
-              0, -sin(sigma), cos(sigma)];
-    w_body = g_alpha * g_bank * w_t;
-
-    boresight = boresight_body(:);
-    cosine = dot(boresight, w_body) / (norm(boresight) * norm(w_body));
-    raap_deg = rad2deg(acos(min(1, max(-1, cosine))));
+    antenna = reentry_core.antenna_geometry( ...
+        X_rv, X_relay, aux, shape, los_clear);
 end
 
 function satisfied = path_constraints_satisfied_local(aux, shape)
@@ -877,11 +690,14 @@ function satisfied = path_constraints_satisfied_local(aux, shape)
     max_g = get_struct_field_local(constraints, 'max_g_load', inf);
     max_heat = get_struct_field_local(constraints, 'max_heat_flux_W_m2', inf);
     max_bank = get_struct_field_local(constraints, 'max_bank_angle_deg', inf);
+    heat_required = get_bool_param_local(shape, ...
+        'heat_constraint_required', isfinite(max_heat));
     heat_comparable = get_bool_param_local(shape, 'heat_constraint_comparable', true);
 
     satisfied = aux.dynamic_pressure <= max_q && ...
                 aux.g_load <= max_g && ...
-                (~heat_comparable || aux.heat_flux <= max_heat) && ...
+                (~heat_required || ~heat_comparable || ...
+                 aux.heat_flux <= max_heat) && ...
                 abs(aux.bank_angle_deg) <= max_bank;
 end
 
@@ -901,24 +717,9 @@ function rate = max_rate_local(values, time)
 end
 
 function [clear, clearance, elevation_deg] = line_of_sight_geometry_local(r_chaser, r_rv, sys, margin_altitude)
-    los = r_chaser - r_rv;
-    los_norm = norm(los);
-    if los_norm <= eps
-        clearance = norm(r_rv) - sys.Re;
-        clear = clearance > margin_altitude;
-        elevation_deg = 90;
-        return;
-    end
-
-    u = r_chaser - r_rv;
-    tau = -dot(r_rv, u) / dot(u, u);
-    tau = min(1, max(0, tau));
-    closest = r_rv + tau * u;
-    clearance = norm(closest) - sys.Re;
-    clear = clearance > margin_altitude;
-
-    up = r_rv / norm(r_rv);
-    elevation_deg = rad2deg(asin(dot(los / los_norm, up)));
+    [clear, clearance, elevation_deg] = ...
+        reentry_core.line_of_sight_geometry( ...
+            r_chaser, r_rv, sys, margin_altitude);
 end
 
 function X = propagate_orbit_chaser_local(X, sys, duration, dt, t0)
@@ -944,7 +745,9 @@ function X = paper_tdrs_state_local(sys, shape, t_abs)
         omega = omega(3);
     end
 
-    inertial_longitude = longitude + omega * t_abs;
+    epoch_angle = deg2rad(get_shape_field_local(shape, ...
+        'earth_fixed_to_eci_angle_at_mission_epoch_deg', 0));
+    inertial_longitude = epoch_angle + longitude + omega * t_abs;
     cos_latitude = cos(latitude);
     r = radius * [ ...
         cos_latitude * cos(inertial_longitude); ...
@@ -1031,6 +834,16 @@ function shape = get_reentry_shape_local(sys, params)
         shape.heating_model = get_struct_field_local(cfg, 'heating_model', "SUTTON_GRAVES_SURROGATE");
         shape.paper_heating_model = get_struct_field_local(cfg, 'paper_heating_model', "ZHANG_EQ32_KQ_SQRT_RHO_V_3P15");
         shape.heat_constraint_comparable = get_bool_param_local(cfg, 'heat_constraint_comparable', false);
+        shape.heat_constraint_required = get_bool_param_local( ...
+            cfg, 'heat_constraint_required', true);
+        shape.paper_heat_limit_table_value = get_struct_field_local( ...
+            cfg, 'paper_heat_limit_table_value', NaN);
+        shape.paper_heat_limit_table_unit = string(get_struct_field_local( ...
+            cfg, 'paper_heat_limit_table_unit', "UNAVAILABLE"));
+        shape.paper_heat_limit_figure_approx_W_m2 = get_struct_field_local( ...
+            cfg, 'paper_heat_limit_figure_approx_W_m2', NaN);
+        shape.paper_heat_limit_internally_consistent = get_bool_param_local( ...
+            cfg, 'paper_heat_limit_internally_consistent', false);
         shape.constraints = get_struct_field_local(cfg, 'constraints', struct());
         shape.paper_initial_altitude_m = get_struct_field_local(cfg, 'paper_initial_altitude_m', 80e3);
         shape.paper_initial_scenarios = get_struct_field_local(cfg, 'paper_initial_scenarios', nan(3,5));
@@ -1052,11 +865,16 @@ function shape = get_reentry_shape_local(sys, params)
         shape.paper_tdrs_latitude_deg = get_struct_field_local(communication, 'paper_tdrs_latitude_deg', 0);
         shape.paper_tdrs_geocentric_radius_m = get_struct_field_local( ...
             communication, 'paper_tdrs_geocentric_radius_m', 42164e3);
+        shape.earth_fixed_to_eci_angle_at_mission_epoch_deg = ...
+            get_struct_field_local(communication, ...
+                'earth_fixed_to_eci_angle_at_mission_epoch_deg', 0);
         if ~isfinite(shape.paper_tdrs_longitude_deg) || ...
                 ~isfinite(shape.paper_tdrs_latitude_deg) || ...
                 abs(shape.paper_tdrs_latitude_deg) > 90 || ...
                 ~isfinite(shape.paper_tdrs_geocentric_radius_m) || ...
-                shape.paper_tdrs_geocentric_radius_m <= sys.Re
+                shape.paper_tdrs_geocentric_radius_m <= sys.Re || ...
+                ~isscalar(shape.earth_fixed_to_eci_angle_at_mission_epoch_deg) || ...
+                ~isfinite(shape.earth_fixed_to_eci_angle_at_mission_epoch_deg)
             error('Paper TDRS longitude/latitude/radius reference is invalid.');
         end
         antenna_mount = upper(string(get_struct_field_local(communication, 'antenna_mount', "AFT")));
@@ -1122,6 +940,8 @@ function shape = get_reentry_shape_local(sys, params)
         shape.heating_model = get_struct_field_local(cfg, 'heating_model', "SUTTON_GRAVES_SURROGATE");
         shape.paper_heating_model = get_struct_field_local(cfg, 'paper_heating_model', "DETRA_KEMP_RIDDELL_EQ28");
         shape.heat_constraint_comparable = get_bool_param_local(cfg, 'heat_constraint_comparable', false);
+        shape.heat_constraint_required = get_bool_param_local( ...
+            cfg, 'heat_constraint_required', true);
         shape.constraints = get_struct_field_local(cfg, 'constraints', struct());
         shape.reference_entry_interface_altitude_m = get_struct_field_local(cfg, 'entry_interface_altitude_m', 120e3);
         shape.reference_entry_speed_m_s = get_struct_field_local(cfg, 'reference_entry_speed_m_s', 7.97e3);
@@ -1166,9 +986,10 @@ function shape = get_reentry_shape_local(sys, params)
         get_struct_field_local(uncertainty, 'cd_scale', 1.0));
     shape.ld_scale = get_param_local(params, 'ld_scale', ...
         get_struct_field_local(uncertainty, 'ld_scale', 1.0));
-    if shape.density_scale <= 0 || shape.cd_scale <= 0 || shape.ld_scale < 0
-        error('Re-entry density_scale and cd_scale must be positive; ld_scale must be nonnegative.');
-    end
+    validate_finite_scalar_local(shape.density_scale, ...
+        'density_scale', 0, false);
+    validate_finite_scalar_local(shape.cd_scale, 'cd_scale', 0, false);
+    validate_finite_scalar_local(shape.ld_scale, 'ld_scale', 0, true);
 end
 
 function key = normalize_shape_key_local(name)
@@ -1185,56 +1006,6 @@ function key = normalize_shape_key_local(name)
     end
 
     key = char(txt);
-end
-
-function ld = lookup_ld_local(shape, aoa_deg, ~)
-    aoa_grid = get_shape_field_local(shape, 'ld_aoa_deg', [0 20 80]);
-    ld_grid = get_shape_field_local(shape, 'ld_values', [0 1 0]);
-    aoa = min(max(aoa_deg, min(aoa_grid)), max(aoa_grid));
-    ld = interp1(aoa_grid, ld_grid, aoa, 'pchip');
-    ld = max(0, ld);
-end
-
-function [aoa_deg, bank_deg] = resolve_entry_commands_local(shape, aoa_fallback_deg, bank_fallback_deg, speed_rel, mach)
-    profile_mode = upper(string(get_shape_field_local(shape, 'aoa_profile_mode', "CONSTANT")));
-    bank_deg = bank_fallback_deg;
-
-    if profile_mode == "SPEED_SCHEDULE"
-        speed_grid = get_shape_field_local(shape, 'aoa_speed_grid_m_s', [0 8000]);
-        aoa_grid = get_shape_field_local(shape, 'aoa_values_deg', [aoa_fallback_deg aoa_fallback_deg]);
-        speed_query = min(max(speed_rel, speed_grid(1)), speed_grid(end));
-        aoa_deg = interp1(speed_grid, aoa_grid, speed_query, 'linear');
-    elseif profile_mode == "MACH_SCHEDULE"
-        mach_grid = get_shape_field_local(shape, 'aoa_mach_grid', [0 30]);
-        aoa_grid = get_shape_field_local(shape, 'aoa_values_deg', [aoa_fallback_deg aoa_fallback_deg]);
-        mach_query = min(max(mach, mach_grid(1)), mach_grid(end));
-        aoa_deg = interp1(mach_grid, aoa_grid, mach_query, 'linear');
-    else
-        aoa_deg = aoa_fallback_deg;
-    end
-end
-
-function [cd, cl, ld] = aerodynamic_coefficients_local(shape, aoa_deg, mach)
-    aero_model = upper(string(get_shape_field_local(shape, 'aero_model', "LEGACY_SHAPE_LD")));
-
-    if aero_model == "PAPER_RLV_POLYNOMIAL"
-        cl_coeff = get_shape_field_local(shape, 'cl_polynomial', [-0.041065, 0.016292, 0.0002602]);
-        cd_coeff = get_shape_field_local(shape, 'cd_from_cl_polynomial', [0.080505, -0.03026, 0.86495]);
-        cl = cl_coeff(1) + cl_coeff(2)*aoa_deg + cl_coeff(3)*aoa_deg^2;
-        cd = cd_coeff(1) + cd_coeff(2)*cl + cd_coeff(3)*cl^2;
-        cd = max(cd, 1e-6);
-        ld = cl / cd;
-    elseif aero_model == "PAPER_CAPSULE_REDUCED"
-        cd = get_shape_field_local(shape, 'cd', 1.3);
-        ld = get_shape_field_local(shape, 'nominal_ld', 0.25);
-    else
-        cd = get_shape_field_local(shape, 'cd', 1.2);
-        ld = lookup_ld_local(shape, aoa_deg, mach);
-    end
-
-    cd = cd * get_shape_field_local(shape, 'cd_scale', 1.0);
-    ld = ld * get_shape_field_local(shape, 'ld_scale', 1.0);
-    cl = cd * ld;
 end
 
 function atmosphere_opts = get_atmosphere_opts_local(sys)
@@ -1293,13 +1064,39 @@ end
 
 function value = get_bool_param_local(s, name, default_value)
     value = get_param_local(s, name, default_value);
-    if islogical(value)
+    if islogical(value) && isscalar(value)
         return;
     end
-    if isnumeric(value)
-        value = value ~= 0;
+    if isnumeric(value) && isreal(value) && isscalar(value) && ...
+            isfinite(value) && any(value == [0, 1])
+        value = logical(value);
         return;
     end
     txt = lower(strtrim(string(value)));
-    value = txt == "true" || txt == "1" || txt == "yes" || txt == "on";
+    if isscalar(txt) && any(txt == ["true", "1", "yes", "on"])
+        value = true;
+    elseif isscalar(txt) && any(txt == ["false", "0", "no", "off"])
+        value = false;
+    else
+        error('Reentry_Propagator:InvalidLogical', ...
+            '%s must be a scalar logical value.', name);
+    end
+end
+
+function validate_finite_scalar_local(value, name, minimum, inclusive)
+    if ~isnumeric(value) || ~isreal(value) || ~isscalar(value) || ...
+            ~isfinite(value)
+        error('Reentry_Propagator:InvalidScalar', ...
+            '%s must be a finite real scalar.', name);
+    end
+    if (inclusive && value < minimum) || (~inclusive && value <= minimum)
+        if inclusive
+            relation = '>=';
+        else
+            relation = '>';
+        end
+        error('Reentry_Propagator:ScalarOutOfRange', ...
+            '%s must be %s %.15g.', ...
+            name, relation, minimum);
+    end
 end

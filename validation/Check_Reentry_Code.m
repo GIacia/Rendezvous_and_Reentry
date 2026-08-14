@@ -1,0 +1,43 @@
+function results = Check_Reentry_Code()
+%CHECK_REENTRY_CODE Run MATLAB Code Analyzer on the active re-entry scope.
+
+    project_root = fileparts(fileparts(mfilename('fullpath')));
+    targets = { ...
+        fullfile(project_root, 'Main_Mission_Simulator.m'), ...
+        fullfile(project_root, 'Mission_Config.m'), ...
+        fullfile(project_root, 'Mission_Run_Config.m'), ...
+        fullfile(project_root, 'Reentry_Propagator.m'), ...
+        fullfile(project_root, 'Run_Paper_Reproduction_Suite.m'), ...
+        fullfile(project_root, 'validation', 'Check_Reentry_Code.m'), ...
+        fullfile(project_root, 'validation', 'Run_All_Reentry_Validations.m'), ...
+        fullfile(project_root, 'validation', 'Validate_Reentry_Core_Equivalence.m'), ...
+        fullfile(project_root, 'validation', 'Validate_Reentry_Propagator.m'), ...
+        fullfile(project_root, 'validation', 'Validate_Paper_Reproduction.m')};
+    targets = append_tree_local(targets, fullfile(project_root, '+reentry_core'));
+    targets = append_tree_local(targets, fullfile(project_root, '+paperstudies'));
+
+    issue_count = 0;
+    for i = 1:numel(targets)
+        messages = checkcode(targets{i}, '-id');
+        issue_count = issue_count + numel(messages);
+        for j = 1:numel(messages)
+            fprintf('%s:%d [%s] %s\n', targets{i}, messages(j).line, ...
+                messages(j).id, messages(j).message);
+        end
+    end
+
+    results.file_count = numel(targets);
+    results.issue_count = issue_count;
+    results.passed = issue_count == 0;
+    assert(results.passed, ...
+        'MATLAB Code Analyzer reported %d issue(s).', issue_count);
+    fprintf('Re-entry Code Analyzer: PASS (%d files, 0 issues)\n', ...
+        results.file_count);
+end
+
+function targets = append_tree_local(targets, folder)
+    entries = dir(fullfile(folder, '**', '*.m'));
+    for i = 1:numel(entries)
+        targets{end+1} = fullfile(entries(i).folder, entries(i).name); %#ok<AGROW>
+    end
+end

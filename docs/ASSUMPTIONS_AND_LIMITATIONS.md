@@ -58,6 +58,20 @@ The atmospheric-entry stage is also simplified:
 - communication checks RAAP cone, configured geometric range, and Earth
   occultation; it does not model RF link margin, antenna gain pattern, plasma
   attenuation, or service availability
+- the analytic paper TDRS accumulates all mission-phase elapsed time, but the
+  mission has no UTC epoch; its default Greenwich-meridian ECI angle is the
+  explicit zero-degree project convention and must be replaced by a
+  GMST-derived value for an epoch-tied RAAP/LOS analysis
+
+The standalone Zhang/Saito study packages improve traceability but do not
+remove those physical limitations. Their regression tests establish software
+equivalence, source transcription, public-equation algebra, coordinate
+round-trips, and uncertainty-grid construction. They are not external
+validation of the assumed atmosphere, aerodynamics, heating, or guidance. Full
+trajectory-level reproduction remains unavailable until Zhang's vehicle/OCP
+inputs and Saito's proprietary aerodynamic and omitted guidance/controller
+inputs are supplied. See `PAPER_REPRODUCTION_FRAMEWORK.md` for the exact claim
+boundary.
 
 ---
 

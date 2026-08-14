@@ -1,0 +1,6 @@
+function R_guidance = eq16_guidance_range( ...
+    R_ref, F2, drag_current, drag_ref, F3, hdot_current, hdot_ref)
+%EQ16_GUIDANCE_RANGE Saito Eq. (16), with caller-controlled units.
+    R_guidance = R_ref + F2 .* (drag_current - drag_ref) + ...
+        F3 .* (hdot_current - hdot_ref);
+end

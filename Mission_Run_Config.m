@@ -138,6 +138,8 @@ function run = Mission_Run_Config()
     run.reentry.communication.max_range_m = defaults.reentry_vehicle.spaceplane.communication.max_range_m;
     run.reentry.communication.tracking_scope = defaults.reentry_vehicle.spaceplane.communication.tracking_scope;
     run.reentry.communication.evaluate_bank_feasibility = defaults.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility;
+    run.reentry.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg = ...
+        defaults.reentry_vehicle.spaceplane.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg;
     % Paper sensitivity cases can be reproduced with 0.9 and 1.1.
     run.reentry.uncertainty.density_scale = defaults.reentry_vehicle.uncertainty.density_scale;
     run.reentry.uncertainty.cd_scale = defaults.reentry_vehicle.uncertainty.cd_scale;

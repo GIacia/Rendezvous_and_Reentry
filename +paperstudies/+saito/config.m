@@ -1,0 +1,223 @@
+function cfg = config()
+%CONFIG Published Saito-study data and explicitly separated conventions.
+%   CFG = PAPERSTUDIES.SAITO.CONFIG() returns the numerical content needed
+%   to audit the public equations and tables in Saito et al. (2025). Data
+%   tagged as published are not silently completed with proprietary HSRC
+%   aerodynamic data or unpublished guidance/controller settings.
+
+    cfg.study.id = "SAITO_2025_ACTA_ASTRONAUTICA_229_684_697";
+    cfg.study.title = "Guidance strategies for controlled Earth reentry of small spacecraft in low Earth orbit";
+    cfg.study.doi = "10.1016/j.actaastro.2024.12.054";
+    cfg.study.reproduction_claim = "PARTIAL_REPRODUCTION";
+
+    % Shared numerical conventions. These are standard project choices,
+    % not numerical constants printed in the paper.
+    cfg.conventions.earth_radius_m = 6378137;
+    cfg.conventions.earth_mu_m3_s2 = 3.986004418e14;
+    cfg.conventions.earth_rotation_rad_s = 7.2921159e-5;
+    cfg.conventions.gravity_m_s2 = 9.80665;
+    cfg.conventions.entry_latitude_interpretation = "SPHERICAL_GEOCENTRIC_FROM_PUBLISHED_GEODETIC_LABEL";
+    cfg.conventions.entry_epoch_frame = "ECI_ALIGNED_WITH_EARTH_FIXED_AT_T0";
+    cfg.conventions.range_model = "SPHERICAL_GREAT_CIRCLE_USING_EARTH_RADIUS";
+
+    % Table 1: analyzed vehicle. The paper prose also says 300 kg in one
+    % place; Table 1 and Section 2.1 consistently total 330 kg.
+    cfg.tables.table1.columns = ["property", "satellite", "capsule"];
+    cfg.tables.table1.satellite.mass_kg = 180;
+    cfg.tables.table1.satellite.inertia_kg_m2 = [ ...
+        23.3,    0.119,  -0.127; ...
+         0.119, 45.5,     0.00930; ...
+        -0.127,  0.00930, 49.7];
+    cfg.tables.table1.satellite.size_m = struct( ...
+        'width', 0.800, 'length', 1.25, 'height', 0.845);
+    cfg.tables.table1.satellite.reference_area_m2 = 0.640;
+    cfg.tables.table1.satellite.drag_coefficient = 2.2;
+    cfg.tables.table1.capsule.mass_kg = 150;
+    cfg.tables.table1.capsule.inertia_kg_m2 = [ ...
+         2.85,   -0.0115, 0.00580; ...
+        -0.0115,  2.92,   0.00580; ...
+         0.00580, 0.00580, 2.94];
+    cfg.tables.table1.capsule.diameter_m = 0.840;
+    cfg.tables.table1.capsule.height_m = 0.657;
+    cfg.tables.table1.capsule.reference_area_m2 = 0.554;
+    cfg.tables.table1.capsule.drag_coefficient = 1.3;
+    cfg.tables.table1.total_mass_kg = 330;
+
+    % Table 3: deorbit initial conditions and four disturbance cases.
+    cfg.tables.table3.initial_epoch_utc = "2026-07-05T22:35:00Z";
+    cfg.tables.table3.position_eci_km = [-672.822; -4497.903; -5080.118];
+    cfg.tables.table3.velocity_eci_km_s = [-2.212; -5.332; 5.006];
+    cfg.tables.table3.deorbit_ignition_epoch_utc = "2026-07-05T22:39:30Z";
+    cfg.tables.table3.center_of_gravity_mm = [ ...
+         0,  0,  0; ...
+         0,  0,  0; ...
+        30, 20, 20; ...
+        30, 20, 20];
+    cfg.tables.table3.elevation_angle_deg = [0; 2.2; 0; 2.2];
+    cfg.tables.table3.initial_quaternion_vector_first = [0; 0; 0; 1];
+    cfg.tables.table3.initial_angular_velocity_published = [0.10; 0.10; 0.10];
+    cfg.tables.table3.initial_angular_velocity_published_unit = "m/s";
+    cfg.tables.table3.initial_angular_velocity_status = "UNAVAILABLE_AMBIGUOUS_UNIT";
+
+    % Table 4 columns: h [km], lon [deg], lat [deg], speed [km/s],
+    % flight-path angle [deg], velocity azimuth [deg], range-to-go [km].
+    cfg.tables.table4.columns = [ ...
+        "altitude_km", "longitude_deg", "latitude_deg", ...
+        "speed_km_s", "fpa_deg", "azimuth_deg", "range_to_go_km"];
+    cfg.tables.table4.values = [ ...
+        121.13, 176.04, 64.22, 7.97, -1.16, -161.74, 4852; ...
+        121.06, 176.22, 64.47, 7.97, -1.16, -161.61, 4882; ...
+        121.01, 176.26, 64.54, 7.97, -1.16, -161.59, 4890; ...
+        121.15, 176.44, 64.79, 7.97, -1.17, -161.46, 4920];
+    cfg.tables.table4.target_latitude_deg = 22.74;
+    cfg.tables.table4.target_longitude_deg = 158.78;
+
+    % Table 5: explicit-guidance reference trajectory. The paper labels
+    % F1 as km, although Eq. (13) requires inverse-distance units.
+    cfg.tables.table5.columns = [ ...
+        "Vref_km_s", "Rref_km", "Dref_g", "hdot_ref_m_s", ...
+        "F1_published_km", "F2_km_per_g", "F3_km_per_m_s"];
+    cfg.tables.table5.values = [ ...
+         0.30,    6.30, 3.32, -166.33,   22.59,   -3.31, 0.02; ...
+         0.64,    6.30, 3.32, -166.33,   40.41,   -3.31, 0.02; ...
+         1.20,   21.13, 3.41, -207.58,   80.15,   -5.38, 0.04; ...
+         1.92,   49.66, 3.67, -175.15,  179.09,   -8.40, 0.09; ...
+         2.60,   93.61, 3.48, -122.98,  347.14,  -11.78, 0.15; ...
+         3.08,  134.42, 3.31, -151.73,  522.63,  -14.12, 0.21; ...
+         4.27,  281.68, 2.78, -151.73,  610.05,  -19.68, 0.37; ...
+         4.86,  387.22, 2.44, -188.47,  862.11,  -44.66, 0.47; ...
+         5.60,  565.02, 1.97, -193.64, 1264.36,  -59.55, 0.61; ...
+         6.35,  838.01, 1.42, -239.36, 1815.89,  -59.55, 0.81; ...
+         7.04, 1260.82, 0.85, -285.08, 2565.02, -120.34, 1.32; ...
+         7.16, 1374.28, 0.74, -330.80, 2792.82, -199.72, 1.85; ...
+        10.67, 1374.28, 0.74, -376.52, 2792.82, -199.72, 1.85];
+    cfg.tables.table5.known_dimensional_inconsistencies = [ ...
+        "EQ14_OMITS_RADIUS_FOR_DISTANCE", ...
+        "EQ17_RETURNS_DIMENSIONLESS_VALUE_WHILE_TABLE_USES_KM", ...
+        "TABLE_F1_UNIT_SHOULD_BE_INVERSE_DISTANCE_FOR_EQ13"];
+
+    % Table 6: deorbit ignition-time sweep used to select entry ranges.
+    % The start/end/interval define 27 exact ignition epochs. Only the
+    % aggregate range-to-go bounds are printed; the individual 27 entry
+    % states and ranges are not available and must not be interpolated as
+    % though they were published data.
+    cfg.tables.table6.total_number_of_cases = 27;
+    cfg.tables.table6.center_of_gravity_mm = [30, 20, 20];
+    cfg.tables.table6.elevation_angle_deg = 2.2;
+    cfg.tables.table6.deorbit_ignition_start_utc = "2026-07-05T22:34:00Z";
+    cfg.tables.table6.deorbit_ignition_end_utc = "2026-07-05T22:47:00Z";
+    cfg.tables.table6.deorbit_ignition_interval_s = 30;
+    cfg.tables.table6.deorbit_ignition_offset_s = (0:30:780).';
+    cfg.tables.table6.entry_range_to_go_bounds_km = [2369, 7031];
+    cfg.tables.table6.entry_range_to_go_spacing_description = "APPROXIMATELY_200_KM";
+    cfg.tables.table6.individual_entry_range_to_go_km = nan(27,1);
+    cfg.tables.table6.individual_entry_states_available = false;
+    cfg.tables.table6.classification = "PUBLISHED_EXACT_AGGREGATE_UNAVAILABLE_INDIVIDUALS";
+
+    % Table 7: all 15 explicit-guidance uncertainty cases.
+    cfg.tables.table7.columns = [ ...
+        "case_id", "range_to_go_km", "density_scale_percent", ...
+        "drag_coefficient_scale_percent"];
+    cfg.tables.table7.values = [ ...
+         1, 3824, 100, 100; ...
+         2, 3824,  90, 100; ...
+         3, 3824, 110, 100; ...
+         4, 3824, 100,  90; ...
+         5, 3824, 100, 110; ...
+         6, 4011, 100, 100; ...
+         7, 4011,  90, 100; ...
+         8, 4011, 110, 100; ...
+         9, 4011, 100,  90; ...
+        10, 4011, 100, 110; ...
+        11, 4190, 100, 100; ...
+        12, 4190,  90, 100; ...
+        13, 4190, 110, 100; ...
+        14, 4190, 100,  90; ...
+        15, 4190, 100, 110];
+
+    % Table 8. The source row says "Variance (2-sigma)"; the values are
+    % retained as published and named two_sigma rather than variance.
+    cfg.tables.table8.metrics = [ ...
+        "maximum_aerodynamic_load_g", "rcs_total_impulse_N_s", ...
+        "maximum_heating_rate_MW_m2", "total_heating_MJ_m2"];
+    cfg.tables.table8.mean = [5.14, 176.64, 0.86, 208.59];
+    cfg.tables.table8.two_sigma = [1.12, 77.65, 0.044, 17.34];
+    cfg.tables.table8.published_second_row_label = "Variance (2-sigma)";
+    cfg.tables.table8.nominal_cross_range_error_km = -0.158;
+    cfg.tables.table8.nominal_down_range_error_km = -4.322;
+    cfg.tables.table8.aggregate_mean_cross_range_error_km = 12.68;
+    cfg.tables.table8.aggregate_mean_down_range_error_km = 8.17;
+    cfg.tables.table8.aggregate_two_sigma_cross_range_km = 18.52;
+    cfg.tables.table8.aggregate_two_sigma_down_range_km = 14.43;
+
+    % Table 9: RPC campaign axes. The Cartesian product has 225 cases.
+    cfg.tables.table9.range_to_go_km = [5462, 5701, 5886, 6072, 6258];
+    cfg.tables.table9.density_scale_percent = [90, 100, 110];
+    cfg.tables.table9.drag_coefficient_scale_percent = [80, 90, 100, 110, 120];
+    cfg.tables.table9.guidance_approach = ["RPC-1", "RPC-2", "RPC-3"];
+
+    % Tables 10 and 11. Columns after RTG are RPC-1 mean/2-sigma,
+    % RPC-2 mean/2-sigma, and RPC-3 mean/2-sigma, all in km.
+    error_columns = [ ...
+        "range_to_go_km", "rpc1_mean_km", "rpc1_two_sigma_km", ...
+        "rpc2_mean_km", "rpc2_two_sigma_km", ...
+        "rpc3_mean_km", "rpc3_two_sigma_km"];
+    cfg.tables.table10.columns = error_columns;
+    cfg.tables.table10.values = [ ...
+        5462,  -1.38,  17.40, 1.90,  8.77,  0.39, 2.41; ...
+        5701,  -4.35,  32.05, 1.61,  9.45,  0.55, 6.29; ...
+        5886, -16.28,  10.73, 1.41,  9.14, -0.85, 5.60; ...
+        6072, -11.44,  63.42, 0.40,  7.58, -0.10, 5.69; ...
+        6258,  -6.87, 104.26, 0.35, 10.45, -0.28, 7.51];
+    cfg.tables.table11.columns = error_columns;
+    cfg.tables.table11.values = [ ...
+        5462,   2.39, 13.30,  0.79,  8.74,  0.53, 2.62; ...
+        5701,  -1.61, 27.97,  0.64,  8.61,  0.20, 6.01; ...
+        5886,  -1.14, 54.66,  0.40, 10.17,  1.62, 7.01; ...
+        6072,   7.71, 53.71, -0.90,  7.50, -0.42, 4.56; ...
+        6258, -30.93, 31.23,  0.18,  7.08, -0.39, 5.37];
+
+    % Published switches, rates, and sequence constants.
+    cfg.published.deorbit.initial_orbit_altitude_m = 450e3;
+    cfg.published.deorbit.hts_thrust_N = 172;
+    cfg.published.deorbit.hts_firing_duration_s = 210;
+    cfg.published.deorbit.residual_thrust_N = 0.0100;
+    cfg.published.deorbit.residual_standby_duration_s = 540;
+    cfg.published.deorbit.spin_target_deg_s = 180;
+    cfg.published.deorbit.spin_correction_threshold_deg_s = 120;
+    cfg.published.reentry.guidance_activation_drag_g = 0.20;
+    cfg.published.reentry.guidance_cutoff_mach = 3;
+    cfg.published.reentry.parachute_deploy_speed_m_s = 240;
+    cfg.published.reentry.integrator = "RK4";
+    cfg.published.reentry.integrator_rate_Hz = 100;
+    cfg.published.reentry.rcs_control_rate_Hz = 50;
+    cfg.published.reentry.explicit_guidance_rate_Hz = 2;
+    cfg.published.reentry.rpc_guidance_rate_Hz = 1;
+    cfg.published.reentry.atmosphere = "US_STANDARD_ATMOSPHERE_1976";
+    cfg.published.reentry.gravity = "CENTRAL_SPHERICAL";
+    cfg.published.reentry.wind = "NONE";
+    cfg.published.reentry.perfect_navigation = true;
+    cfg.published.reentry.nominal_ld_bounds = [0.20, 0.30];
+    cfg.published.reentry.mach_aero_data_bounds = [0.4, 10];
+    cfg.published.reentry.maximum_allowable_heating_rate_W_m2 = 1.00e6;
+    cfg.published.reentry.terminal_bank_landing_tolerance_m = 1000;
+    cfg.published.explicit_guidance.eq17_distance_redimensionalization = "NOT_PRINTED";
+    cfg.published.explicit_guidance.V0_m_s = NaN;
+    cfg.published.explicit_guidance.K1 = NaN;
+    cfg.published.explicit_guidance.K2 = NaN;
+    cfg.published.explicit_guidance.K3 = NaN;
+    cfg.published.explicit_guidance.missing_parameter_classification = "UNAVAILABLE";
+
+    % Optional forward propagation is deliberately a reduced surrogate.
+    cfg.surrogate.enabled_by_default = false;
+    cfg.surrogate.model = "CONSTANT_CD_CONSTANT_LD_EXISTING_REENTRY_PROPAGATOR";
+    cfg.surrogate.mass_kg = 150;
+    cfg.surrogate.reference_area_m2 = 0.554;
+    cfg.surrogate.cd = 1.3;
+    cfg.surrogate.ld = 0.25;
+    cfg.surrogate.trim_aoa_deg = 0;
+    cfg.surrogate.dt_s = 0.5;
+    cfg.surrogate.max_time_s = 2500;
+    cfg.surrogate.atmosphere_model = "PROJECT_ISA76_IMPLEMENTATION";
+    cfg.surrogate.heating_model = "SUTTON_GRAVES_NOT_PAPER_EQ28";
+end

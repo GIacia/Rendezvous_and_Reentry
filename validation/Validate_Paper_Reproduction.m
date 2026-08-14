@@ -1,0 +1,83 @@
+function results = Validate_Paper_Reproduction()
+%VALIDATE_PAPER_REPRODUCTION Regression checks for both paper-study packages.
+%   These checks validate transcription, algebra, coordinates, grids, and
+%   shared-propagator adapters. They do not validate unavailable proprietary
+%   data or establish full numerical reproduction of either paper.
+
+    project_root = fileparts(fileparts(mfilename('fullpath')));
+    addpath(project_root);
+
+    suite = Run_Paper_Reproduction_Suite(struct('print_summary', false));
+    assert(suite.audit.all_passed, ...
+        'The combined published-condition audit did not pass.');
+    assert(suite.evidence.shared_kernel_package_available, ...
+        'The shared +reentry_core package is not visible on the MATLAB path.');
+    assert(~suite.evidence.full_paper_trajectory_reproduction_established, ...
+        'The suite must not claim full numerical paper reproduction.');
+
+    zhang_test = paperstudies.zhang.selftest(true);
+    assert(zhang_test.default_audit_passed);
+    assert(zhang_test.forward_smoke_passed);
+    assert(abs(zhang_test.initial_raap_adapter_error_deg) < 1e-10, ...
+        'Zhang standalone/shared-kernel RAAP adapters disagree.');
+    assert(~suite.zhang.reproduction_status.full_numerical_reproduction_available);
+    assert(suite.zhang.reproduction_status.components.optimized_bank_history == ...
+        "UNAVAILABLE");
+    assert(~suite.zhang.config.heating.source_values_consistent);
+
+    saito_test = paperstudies.saito.selftest();
+    assert(saito_test.passed);
+    assert(saito_test.entry_case_count == 4);
+    assert(saito_test.table6_case_count == 27);
+    assert(saito_test.explicit_case_count == 15);
+    assert(saito_test.rpc_case_count == 225);
+    assert(max(abs(saito_test.range_discrepancy_m)) > 60e3, ...
+        'The published Table-4 range inconsistency was not detected.');
+    assert(~suite.saito.status.full_numeric_reproduction_possible);
+
+    saito_forward = paperstudies.saito.run(struct( ...
+        'forward', true, 'entry_case', 1, 'dt_s', 1, 'max_time_s', 1));
+    assert(saito_forward.forward.executed);
+    assert(saito_forward.forward.classification == "SURROGATE_ONLY");
+    assert(~saito_forward.forward.numeric_paper_reproduction);
+    assert(~saito_forward.forward.heating_comparable_to_paper_eq28);
+    assert(numel(saito_forward.forward.history.time) >= 2);
+    entry_reference = suite.saito.entry_cases(1).published;
+    assert(abs(saito_forward.forward.history.altitude(1) - ...
+        entry_reference.altitude_m) < 1e-6);
+    assert(abs(saito_forward.forward.history.speed_rel(1) - ...
+        entry_reference.speed_m_s) < 1e-9);
+    assert(abs(saito_forward.forward.history.fpa_rel_deg(1) - ...
+        entry_reference.fpa_deg) < 1e-10);
+    expected_beta = suite.saito.tables.table1.capsule.mass_kg / ...
+        (suite.saito.tables.table1.capsule.drag_coefficient * ...
+         suite.saito.tables.table1.capsule.reference_area_m2);
+    assert(abs(saito_forward.forward.summary.ballistic_coefficient_kg_m2 - ...
+        expected_beta) < 1e-10);
+
+    results.passed = true;
+    results.zhang_initial_raap_adapter_error_deg = ...
+        zhang_test.initial_raap_adapter_error_deg;
+    results.saito_maximum_state_roundtrip_error = ...
+        saito_test.maximum_roundtrip_error;
+    results.saito_table6_case_count = saito_test.table6_case_count;
+    results.saito_range_discrepancy_km = ...
+        saito_test.range_discrepancy_m / 1e3;
+    results.saito_initial_state_adapter_error = struct( ...
+        'altitude_m', saito_forward.forward.history.altitude(1) - ...
+            entry_reference.altitude_m, ...
+        'speed_m_s', saito_forward.forward.history.speed_rel(1) - ...
+            entry_reference.speed_m_s, ...
+        'fpa_deg', saito_forward.forward.history.fpa_rel_deg(1) - ...
+            entry_reference.fpa_deg);
+    results.full_numeric_reproduction_established = false;
+
+    fprintf('Paper reproduction framework validation: PASS\n');
+    fprintf('  Zhang RAAP adapter error : %.3e deg\n', ...
+        results.zhang_initial_raap_adapter_error_deg);
+    fprintf('  Saito Table-6 epochs     : %d cases\n', ...
+        results.saito_table6_case_count);
+    fprintf('  Saito uncertainty grids  : %d / %d cases\n', ...
+        saito_test.explicit_case_count, saito_test.rpc_case_count);
+    fprintf('  Full numeric reproduction: NOT ESTABLISHED\n');
+end

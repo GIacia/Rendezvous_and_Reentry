@@ -13,6 +13,14 @@ These are deterministic reduced-order trajectory and diagnostic models. They
 are not paper-reproduction models and do not include the papers' optimal
 control or closed-loop bank guidance.
 
+Standalone `paperstudies.zhang` and `paperstudies.saito` packages now preserve
+the published tables, equations, initial conditions, and missing-data status
+separately from these integrated mission modes. Use
+`Run_Paper_Reproduction_Suite` for that audit path and see
+`PAPER_REPRODUCTION_FRAMEWORK.md` for the evidence and claim boundary. The
+standalone packages deliberately share the atmospheric-entry physical kernel
+with this propagator, but they do not overwrite the normal mission scenario.
+
 The translational state is propagated in Cartesian ECI coordinates with
 central spherical gravity and atmosphere-relative velocity
 `v_rel = v_ECI - omega x r`. Under spherical-Earth/no-wind assumptions this
@@ -78,7 +86,8 @@ Sutton-Graves `sqrt(rho/Rn)*V^3` surrogate. The paper does not provide the
 required `k_q`, and its own presentation is inconsistent: Table 3 gives
 `160,000 W`, whereas Fig. 8(c) appears to show a boundary near
 `1.6 MW/m^2`. Consequently the configured 160 kW value is retained only as
-provenance; no paper heat pass/fail is claimed. The summary reports
+raw provenance with its printed `W` unit and is not inserted into the
+`max_heat_flux_W_m2` field; no paper heat pass/fail is claimed. The summary reports
 `heat_constraint_evaluated = false` and leaves the aggregate status
 unevaluated unless another implemented constraint is definitely violated.
 
@@ -119,6 +128,9 @@ run.reentry.communication.relay_mode = "MISSION_TARGET_DYNAMIC_ORBIT";
 % Paper reference: equatorial GEO, Earth-fixed lon/lat = 77/0 deg,
 % geocentric radius 42,164 km.
 run.reentry.communication.relay_mode = "PAPER_TDRS_STATIC_EARTH_FIXED";
+% Greenwich-meridian ECI angle at mission t=0. Replace zero with a
+% GMST-derived angle when the mission is tied to a real UTC epoch.
+run.reentry.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg = 0;
 ```
 
 In the first case, `X_target`, not a duplicate of the deorbiting chaser, is
@@ -126,6 +138,14 @@ propagated as the independently orbiting relay. In the second case an
 analytic Earth-fixed TDRS state is generated; the supplied target state is
 ignored. The paper treats this relay as stationary relative to Earth over
 the 800-2,000 s RLV flight.
+
+The integrated mission carries the full Phase 1 + Phase 2 + Phase 3 elapsed
+time into the analytic TDRS rotation. The default ECI/Earth-fixed alignment is
+nevertheless an explicit zero-angle project convention because the mission
+scenario has no UTC epoch. A real-epoch RAAP/LOS study must supply the
+corresponding Greenwich sidereal angle through the field above. The standalone
+Zhang study aligns Earth-fixed and ECI axes at its entry epoch, so all paper
+longitudes share one declared convention.
 
 Communication geometry is available only when all three tests pass:
 

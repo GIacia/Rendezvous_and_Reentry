@@ -85,12 +85,14 @@ function sys = Mission_Config()
     sys.reentry_vehicle.spaceplane.heating_model = "SUTTON_GRAVES_SURROGATE";
     sys.reentry_vehicle.spaceplane.paper_heating_model = "ZHANG_EQ32_KQ_SQRT_RHO_V_3P15";
     sys.reentry_vehicle.spaceplane.heat_constraint_comparable = false;
+    sys.reentry_vehicle.spaceplane.heat_constraint_required = true;
     sys.reentry_vehicle.spaceplane.paper_heat_limit_table_value = 160e3;
+    sys.reentry_vehicle.spaceplane.paper_heat_limit_table_unit = "W_AS_PRINTED";
     sys.reentry_vehicle.spaceplane.paper_heat_limit_figure_approx_W_m2 = 1.6e6;
     sys.reentry_vehicle.spaceplane.paper_heat_limit_internally_consistent = false;
     sys.reentry_vehicle.spaceplane.constraints.max_dynamic_pressure_Pa = 20e3;
     sys.reentry_vehicle.spaceplane.constraints.max_g_load = 2.5;
-    sys.reentry_vehicle.spaceplane.constraints.max_heat_flux_W_m2 = 160e3;
+    sys.reentry_vehicle.spaceplane.constraints.max_heat_flux_W_m2 = inf;
     sys.reentry_vehicle.spaceplane.constraints.max_bank_angle_deg = 60;
     sys.reentry_vehicle.spaceplane.constraints.max_bank_rate_deg_s = 10;
     % Published simulation cases, retained as references rather than forced
@@ -127,6 +129,10 @@ function sys = Mission_Config()
     sys.reentry_vehicle.spaceplane.communication.paper_tdrs_latitude_deg = 0;
     sys.reentry_vehicle.spaceplane.communication.paper_tdrs_geocentric_radius_m = 42164e3;
     sys.reentry_vehicle.spaceplane.communication.paper_tdrs_stationary_earth_fixed = true;
+    % ECI angle of the Earth-fixed Greenwich meridian at mission t=0.
+    % Zero is an explicit project convention; use a GMST-derived value when
+    % tying the simulation to a real UTC epoch.
+    sys.reentry_vehicle.spaceplane.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg = 0;
 
     % Paper-based reduced-order CAPSULE model.
     % Saito et al., "Guidance strategies for controlled Earth reentry of
@@ -164,6 +170,7 @@ function sys = Mission_Config()
     sys.reentry_vehicle.capsule.heating_model = "SUTTON_GRAVES_SURROGATE";
     sys.reentry_vehicle.capsule.paper_heating_model = "DETRA_KEMP_RIDDELL_EQ28";
     sys.reentry_vehicle.capsule.heat_constraint_comparable = false;
+    sys.reentry_vehicle.capsule.heat_constraint_required = true;
     sys.reentry_vehicle.capsule.constraints.max_heat_flux_W_m2 = 1.0e6;
     sys.reentry_vehicle.capsule.reference_total_heat_load_J_m2 = 200e6;
     % Published reference vehicle values retained for provenance only.

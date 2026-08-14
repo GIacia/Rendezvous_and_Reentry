@@ -451,6 +451,9 @@ fprintf('\n[Phase 4] Atmospheric re-entry from %.0f km interface...\n', sys.h_en
 entry_params = struct();
 entry_params.vehicle_mode = sys.reentry_vehicle.vehicle_mode;
 entry_params.shape_name = sys.reentry_vehicle.selected_shape;
+mission_elapsed_to_entry_s = hist_p1.time(end) + phase2_time + ...
+    phase3_elapsed_to_interface;
+entry_params.paper_tdrs_entry_epoch_s = mission_elapsed_to_entry_s;
 
 entry_stack_mass_kg = X_entry_interface(14);
 entry_capsule_mass_kg = NaN;
@@ -838,6 +841,10 @@ function sys = apply_run_config_to_sys_local(sys, run_cfg)
     sys.reentry_vehicle.spaceplane.communication.max_range_m = get_run_number_field_local(run_cfg, {'reentry','communication','max_range_m'}, sys.reentry_vehicle.spaceplane.communication.max_range_m);
     sys.reentry_vehicle.spaceplane.communication.tracking_scope = get_run_string_field_local(run_cfg, {'reentry','communication','tracking_scope'}, sys.reentry_vehicle.spaceplane.communication.tracking_scope);
     sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility = get_run_bool_field_local(run_cfg, {'reentry','communication','evaluate_bank_feasibility'}, sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility);
+    sys.reentry_vehicle.spaceplane.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg = ...
+        get_run_number_field_local(run_cfg, ...
+            {'reentry','communication','earth_fixed_to_eci_angle_at_mission_epoch_deg'}, ...
+            sys.reentry_vehicle.spaceplane.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg);
     sys.reentry_vehicle.uncertainty.density_scale = get_run_number_field_local(run_cfg, {'reentry','uncertainty','density_scale'}, sys.reentry_vehicle.uncertainty.density_scale);
     sys.reentry_vehicle.uncertainty.cd_scale = get_run_number_field_local(run_cfg, {'reentry','uncertainty','cd_scale'}, sys.reentry_vehicle.uncertainty.cd_scale);
     sys.reentry_vehicle.uncertainty.ld_scale = get_run_number_field_local(run_cfg, {'reentry','uncertainty','ld_scale'}, sys.reentry_vehicle.uncertainty.ld_scale);
@@ -1480,6 +1487,10 @@ function sys = apply_json_to_sys_local(sys, cfg)
         sys.reentry_vehicle.spaceplane.communication.max_range_m = get_json_number_local(cfg, {'reentry','communication','max_range_m'}, sys.reentry_vehicle.spaceplane.communication.max_range_m);
         sys.reentry_vehicle.spaceplane.communication.tracking_scope = get_json_string_local(cfg, {'reentry','communication','tracking_scope'}, sys.reentry_vehicle.spaceplane.communication.tracking_scope);
         sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility = get_json_bool_local(cfg, {'reentry','communication','evaluate_bank_feasibility'}, sys.reentry_vehicle.spaceplane.communication.evaluate_bank_feasibility);
+        sys.reentry_vehicle.spaceplane.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg = ...
+            get_json_number_local(cfg, ...
+                {'reentry','communication','earth_fixed_to_eci_angle_at_mission_epoch_deg'}, ...
+                sys.reentry_vehicle.spaceplane.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg);
         sys.reentry_vehicle.uncertainty.density_scale = get_json_number_local(cfg, {'reentry','uncertainty','density_scale'}, sys.reentry_vehicle.uncertainty.density_scale);
         sys.reentry_vehicle.uncertainty.cd_scale = get_json_number_local(cfg, {'reentry','uncertainty','cd_scale'}, sys.reentry_vehicle.uncertainty.cd_scale);
         sys.reentry_vehicle.uncertainty.ld_scale = get_json_number_local(cfg, {'reentry','uncertainty','ld_scale'}, sys.reentry_vehicle.uncertainty.ld_scale);
@@ -1541,6 +1552,13 @@ function print_environment_config_local(sys)
                 char(string(sys.reentry_vehicle.vehicle_mode)), char(reentry_shape), ...
                 sys.reentry_vehicle.terminal_altitude/1000, ...
                 char(bool_label_local(sys.reentry_vehicle.lift_enabled)));
+    end
+    communication = sys.reentry_vehicle.spaceplane.communication;
+    if upper(string(communication.relay_mode)) == ...
+            "PAPER_TDRS_STATIC_EARTH_FIXED"
+        fprintf(['Paper TDRS ECEF->ECI convention: Greenwich angle at ' ...
+                 'mission epoch %.6f deg\n'], ...
+            communication.earth_fixed_to_eci_angle_at_mission_epoch_deg);
     end
 end
 

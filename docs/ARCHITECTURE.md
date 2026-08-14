@@ -71,6 +71,38 @@ Depending on mode, it supports:
 - translational + rotational 6-DOF propagation
 - thrust-driven mass depletion
 
+### `Reentry_Propagator.m` and `+reentry_core`
+
+`Reentry_Propagator.m` is the atmospheric-entry orchestration layer. It owns
+vehicle/scenario selection, relay propagation, the Zhang blackout-zone latch,
+history logging, path-constraint aggregation, and terminal-event policy.
+
+The numerically reusable part is in the `+reentry_core` MATLAB package:
+
+- seven-state `[r_ECI; v_ECI; mass]` dynamics and RK4 stepping
+- central/J2 gravity and co-rotating-atmosphere relative velocity
+- spaceplane/capsule aerodynamic evaluation and command resolution
+- altitude and speed event refinement
+- FPA, Earth-limb LOS, RAAP, and antenna geometry
+
+Keeping the physical kernel independent of mission and paper policy lets the
+integrated mission and standalone studies exercise one implementation. The
+public `Reentry_Propagator` signature and history/summary interface remain
+unchanged.
+
+### `+paperstudies`
+
+The `+paperstudies/+zhang` and `+paperstudies/+saito` packages are standalone
+paper-condition harnesses. They store published tables and equations,
+machine-readable provenance and blockers, deterministic self-tests, and
+optional surrogate adapters to the shared physical kernel. They do not change
+the normal mission configuration and do not present omitted paper inputs as
+known quantities.
+
+`Run_Paper_Reproduction_Suite.m` is the common entry point. See
+`docs/PAPER_REPRODUCTION_FRAMEWORK.md` for the evidence levels and the boundary
+between structural reproduction and full numerical trajectory reproduction.
+
 ### Python Helpers
 
 `J2PolarHohmann.py` and `J2PolarHohmannShooting.py` form a separate SciPy workflow for studying J2 polar Hohmann-like rendezvous behavior and tuning the active `CUSTOM_IMPULSE` parameters used by the MATLAB script. The shooting script can export a MATLAB-readable JSON configuration.
@@ -101,6 +133,13 @@ to 120 km entry-interface state and budget update
 `Main_Mission_Simulator`
 to `Reentry_Propagator`
 to atmospheric-entry history, heating/dynamic-pressure/g-load diagnostics, and chaser-to-entry-vehicle LOS summary
+
+### Standalone paper studies
+
+`Run_Paper_Reproduction_Suite`
+to `paperstudies.zhang.run` and `paperstudies.saito.run`
+to published-condition regression reports
+to optional `Reentry_Propagator` surrogate forward histories
 
 ## 4. Frames Used
 

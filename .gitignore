@@ -18,6 +18,9 @@ resources/project/
 *.tmp
 *.bak
 
+# Locally held reference papers (do not redistribute from this repository)
+/tmp/pdfs/*.pdf
+
 # =========================
 # Python
 # =========================

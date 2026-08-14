@@ -37,12 +37,25 @@ This repository currently models:
 |-- Atmospheric_Drag_Acceleration.m % Shared MATLAB atmospheric-drag model
 |-- Standard_Atmosphere_Density.m % Shared ISA76-style atmosphere helper
 |-- Reentry_Propagator.m          % Atmospheric-entry propagation and LOS diagnostics
+|-- Run_Paper_Reproduction_Suite.m % Zhang/Saito standalone audit entry point
+|-- +reentry_core/                % Shared reusable atmospheric-entry physics
+|-- +paperstudies/
+|   |-- +zhang/                   % Zhang equations, conditions, provenance, surrogate adapter
+|   `-- +saito/                   % Saito tables, equations, grids, surrogate adapter
 |-- J2PolarHohmann.py             % Python J2 polar Hohmann propagation study
 |-- J2PolarHohmannShooting.py     % Python shooting / constrained optimization helper
 |-- DragDeorbitDesigner.py        % Python drag-aware Phase 3 deorbit design helper
 |-- docs/
 |   |-- ARCHITECTURE.md
-|   `-- ASSUMPTIONS_AND_LIMITATIONS.md
+|   |-- ASSUMPTIONS_AND_LIMITATIONS.md
+|   |-- PAPER_REPRODUCTION_FRAMEWORK.md
+|   `-- REENTRY_PAPER_MODELS.md
+|-- validation/
+|   |-- Check_Reentry_Code.m
+|   |-- Run_All_Reentry_Validations.m
+|   |-- Validate_Reentry_Core_Equivalence.m
+|   |-- Validate_Reentry_Propagator.m
+|   `-- Validate_Paper_Reproduction.m
 |-- examples/
 |   `-- README.md
 |-- results/
@@ -101,6 +114,7 @@ run.reentry.communication.antenna_mount = "AFT"; % or PAPER_TOP
 run.reentry.communication.relay_mode = "MISSION_TARGET_DYNAMIC_ORBIT";
 % Optional paper relay reference:
 % run.reentry.communication.relay_mode = "PAPER_TDRS_STATIC_EARTH_FIXED";
+% run.reentry.communication.earth_fixed_to_eci_angle_at_mission_epoch_deg = 0;
 % Optional only after a link-budget-derived range is available:
 run.reentry.communication.max_range_m = inf;
 
@@ -115,11 +129,43 @@ run.reentry.capsule.altitude_termination_enabled = false; % use 240 m/s event
 See `docs/REENTRY_PAPER_MODELS.md` for the implemented equations, paper
 values, uncertainty scales, and the boundary between diagnostics and guidance.
 
-The entry attitude inputs are intentionally simple in the current model:
-`run.reentry.aoa_deg = []` uses the selected shape's default AoA, and
-`run.reentry.bank_angle_deg` is held constant during atmospheric entry. The
-simulator does not yet propagate vehicle attitude, trim, or closed-loop bank
-guidance for the separated re-entry vehicle.
+### Standalone paper reproduction studies
+
+The integrated mission modes above are reduced mission-level models. Separate
+Zhang and Saito study packages preserve the published conditions without
+silently mixing them with the normal mission scenario:
+
+```matlab
+% Fast deterministic audit; no optimization or forward propagation.
+report = Run_Paper_Reproduction_Suite();
+
+% Optional forward runs through the same physical kernel used by the mission.
+% Missing paper inputs remain explicitly labeled surrogate assumptions.
+report = Run_Paper_Reproduction_Suite(struct('forward', true));
+```
+
+The paper suite runs selected source-anchor, equation, state-construction,
+coordinate-geometry, and uncertainty-grid regressions;
+`Run_All_Reentry_Validations` additionally checks shared-kernel consistency
+and both adapters. The tables remain traceable and machine-readable, but the
+automated suite is not independent proof of every transcribed cell. These checks
+do not claim full numerical reproduction of either paper: Zhang omits material
+vehicle/OCP data, while Saito omits the proprietary aerodynamic database and
+several guidance/controller parameters. See
+`docs/PAPER_REPRODUCTION_FRAMEWORK.md` for the evidence matrix, exact blockers,
+commands, and interpretation rules.
+
+```matlab
+addpath validation
+Run_All_Reentry_Validations
+```
+
+The entry attitude inputs are intentionally simple in the current model.
+SPACEPLANE uses its configured speed-scheduled AoA unless
+`run.reentry.aoa_deg` supplies a constant override; CAPSULE uses its constant
+trim surrogate. `run.reentry.bank_angle_deg` is held constant in both modes.
+The simulator does not yet propagate vehicle attitude, solve trim, or apply
+closed-loop bank guidance for the separated re-entry vehicle.
 
 Leave Phase 1 optimizer outputs such as `run.phase1.phase_angle_deg`,
 `run.phase1.delta_v_m_s`, and `run.phase1.gamma_deg` as `[]` when you want
@@ -313,10 +359,10 @@ the JSON for traceability.
 
 After Phase 3 reaches the configured entry interface, `Reentry_Propagator.m` propagates a separated re-entry vehicle through a co-rotating ISA76 atmosphere. The translational state remains ECI, but drag and lift use atmosphere-relative velocity, which is equivalent to an ECEF-relative aerodynamic velocity model.
 
-AoA and bank angle are selected once at the start of atmospheric entry. If
-`run.reentry.aoa_deg` is empty, the selected shape's `default_aoa_deg` is used;
-otherwise the user value is used. `run.reentry.bank_angle_deg` rotates the lift
-direction about the atmosphere-relative velocity vector and is also held
+SPACEPLANE resolves AoA from the configured speed schedule at every dynamics
+evaluation unless `run.reentry.aoa_deg` supplies a constant override. CAPSULE
+uses a constant trim surrogate. `run.reentry.bank_angle_deg` rotates the lift
+direction about the atmosphere-relative velocity vector and remains open-loop
 constant. The flight-path angle is not commanded during Phase 4; it is computed
 from the propagated position and velocity state and evolves naturally under
 gravity, drag, and lift.
@@ -374,8 +420,8 @@ Important assumptions include:
 - Earth gravity + J2, with optional atmospheric drag
 - no SRP, third-body gravity, or full Earth-fixed frame dynamics beyond the simple co-rotating atmosphere used by the drag and entry models
 - drag-aware `HOHMANN` deorbit design is a single retrograde burn followed by numerical drag propagation, not a full entry-guidance, landing-target, or high-dimensional trajectory optimizer
-- re-entry vehicle Cd is currently an assumed constant; only L/D trends and geometry are taken from externally provided shape data
-- re-entry AoA and bank angle are fixed during Phase 4; no attitude propagation, trim solve, or bank guidance law is included yet
+- SPACEPLANE uses the Zhang polynomial `CL/CD` with project-assumed area and mass; CAPSULE uses constant `Cd/L/D` because the source aerodynamic database is unavailable
+- SPACEPLANE AoA is speed-scheduled and CAPSULE trim is constant; bank is open-loop constant and no attitude propagation, trim solve, or bank guidance law is included yet
 - simplified impulsive burns in the phasing and proximity stages
 - simplified thrust and sensor error models
 - simplified capture / berthing logic
@@ -407,6 +453,22 @@ Examples of current limitations:
 6. Automated regression test scripts
 7. Batch mission-case runner for parameter sweeps
 
+## Citation and Research Attribution
+
+If you use this simulator in research, cite the repository using
+[`CITATION.cff`](CITATION.cff) and cite the Zhang and/or Saito source article
+for every paper-derived model component used in the analysis. Detailed reuse
+boundaries, article notices, DOI links, provenance classes, and the
+non-endorsement statement are recorded in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+The source-paper PDFs, article figures, substantial article text, proprietary
+data, and unpublished inputs are not redistributed by this repository. Local
+reference PDFs under `tmp/pdfs` are intentionally excluded from Git tracking.
+
 ## License
 
-No license file is included yet. Before making the repository public, choose a license explicitly, such as MIT, BSD-3-Clause, or GPL-3.0 depending on the intended reuse model.
+Original source code and documentation in this repository are licensed under
+the [BSD 3-Clause License](LICENSE), unless a file explicitly states otherwise.
+The license does not apply to the cited papers or other third-party material;
+see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
