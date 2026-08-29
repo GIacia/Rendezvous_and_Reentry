@@ -6,7 +6,9 @@ function run = Mission_Run_Config()
     %   1) edit this file
     %   2) run Main_Mission_Simulator
     %
-    % Lower-level constants and vehicle shape tables remain in Mission_Config.m.
+    % Mission_Config.m is the sole authority for the orbital scenario
+    % (insertion/target altitudes and initial geometry). This file controls
+    % run methods, solver settings, and re-entry options.
     defaults = Mission_Config();
 
     %% Runtime / external config selection
@@ -24,13 +26,6 @@ function run = Mission_Run_Config()
     % Keep legacy setenv(...) overrides available for batch scripts. Set false
     % when you want this file to be the only run-control surface.
     run.runtime.allow_environment_overrides = true;
-
-    %% Scenario
-    run.scenario.h_insert_km = defaults.h_insert / 1e3;
-    run.scenario.h_target_km = defaults.h_target / 1e3;
-    run.scenario.h_wait_km = defaults.h_wait / 1e3;
-    run.scenario.initial_chaser_angle_deg = 0;
-    run.scenario.initial_phase_angle_deg = 90;
 
     %% Maneuver execution
     % "IMPULSIVE" or "FINITE_BURN".

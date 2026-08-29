@@ -153,7 +153,7 @@ phase = pi - n2 * TOF
       = pi * (1 - (a_t / r2)^(3/2))
 ```
 
-`Mission_Config.m`의 `sys.phase`는 이제 SI 단위 일관성을 유지하여 이 식으로 계산된다. 300 km에서 495 km로 올라가는 기본 설정에서는 약 3.8165 deg이다.
+`Mission_Config.m`의 `sys.phase`는 이제 SI 단위 일관성을 유지하여 이 식으로 계산된다. 300 km에서 500 km target orbit으로 올라가는 기본 설정에서는 약 3.9112 deg이다.
 
 다만 실제 code는 J2와 target co-propagation을 포함하므로, closed-form phase angle은 initial guess / filter에 가깝고 최종 alignment는 numerical search가 담당한다.
 
@@ -544,7 +544,6 @@ Main_Mission_Simulator
   "scenario": {
     "initial_chaser_altitude_m": 300000,
     "target_altitude_m": 500000,
-    "waiting_altitude_m": 495000,
     "initial_chaser_angle_deg": 0,
     "initial_phase_angle_deg": 90
   },

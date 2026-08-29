@@ -71,7 +71,8 @@ The active MATLAB `.m` files are intentionally kept at the repository root so th
 
 1. Open the repository folder in MATLAB.
 2. Make sure the current folder is the repository root.
-3. Edit `Mission_Run_Config.m` if you want to change the scenario, burn model,
+3. Edit `Mission_Config.m` to change the orbital scenario (insertion/target
+   altitudes and initial geometry). Edit `Mission_Run_Config.m` for burn model,
    re-entry mode, parking altitude, entry vehicle, or solver tolerances.
 4. Run:
 
@@ -79,11 +80,12 @@ The active MATLAB `.m` files are intentionally kept at the repository root so th
 Main_Mission_Simulator
 ```
 
-`Mission_Run_Config.m` is the recommended control surface for normal use. It
-keeps the commonly adjusted settings in one place:
+`Mission_Config.m` is the single authority for the orbital scenario. Do not
+edit JSON files or `Mission_Run_Config.m` to change insertion/target altitude
+or initial geometry. `Mission_Run_Config.m` is the recommended control surface
+for normal run settings:
 
 - Python optimizer JSON selection: `AUTO`, `NONE`, `FILE`, `CASE_ID`, or `HASH`
-- scenario altitudes and initial phase geometry
 - maneuver model: `IMPULSIVE` or `FINITE_BURN`
 - Phase 1 phasing parameters and capture tolerances
 - Phase 2 proximity-operation waypoints and timing
@@ -262,9 +264,10 @@ run.python_config.case_id = "impulsive_drag-off_h300.0-500.0_phase90.0_31c1e45c_
 Main_Mission_Simulator
 ```
 
-The JSON file overrides only the fields it contains. `Mission_Run_Config.m` is
-then applied again as the final user-facing override, while `Mission_Config.m`
-remains the source for physical constants and vehicle shape tables.
+The JSON file overrides only supported maneuver, proximity-operation, and
+re-entry fields. `Mission_Config.m` remains the sole source for the orbital
+scenario and physical constants; `Mission_Run_Config.m` is applied afterward
+for normal run settings.
 
 For a MATLAB-only run that ignores Python optimizer JSON:
 

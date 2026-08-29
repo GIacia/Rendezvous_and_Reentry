@@ -33,15 +33,13 @@ if upper(string(sys.reentry_vehicle.vehicle_mode)) == "CAPSULE" && ...
     fprintf('Capsule stack mass: base chaser %.3f kg + capsule %.3f kg = %.3f kg\n', ...
             sys.Chaser_Mass_Init, sys.reentry_vehicle.capsule.mass_kg, m_current);
 end
-initial_chaser_angle = get_json_angle_rad_local(mission_cfg, {'scenario','initial_chaser_angle_deg'}, 0);
-initial_phase_angle = get_json_angle_rad_local(mission_cfg, {'scenario','initial_phase_angle_deg'}, pi/2);
-initial_chaser_angle = get_run_angle_deg_local(run_cfg, {'scenario','initial_chaser_angle_deg'}, initial_chaser_angle);
-initial_phase_angle = get_run_angle_deg_local(run_cfg, {'scenario','initial_phase_angle_deg'}, initial_phase_angle);
+initial_chaser_angle = deg2rad(sys.initial_chaser_angle_deg);
+initial_phase_angle = deg2rad(sys.initial_phase_angle_deg);
 
 % Initial chaser state.
 [x_insert, v_insert_vec] = circular_polar_state_local(sys.Re + sys.h_insert, initial_chaser_angle, sys);
 X_chaser_init = [x_insert;  v_insert_vec;  0;0;0;1;  0;0;0;  m_current];
-target_radius = sys.Re + sys.h_wait;
+target_radius = sys.Re + sys.h_target;
 
 % Initial target state.
 [x_target, v_target_vec] = circular_polar_state_local(sys.Re + sys.h_target, initial_chaser_angle + initial_phase_angle, sys);
@@ -802,9 +800,6 @@ function run_cfg = load_run_config_local()
 end
 
 function sys = apply_run_config_to_sys_local(sys, run_cfg)
-    sys.h_insert = get_run_number_field_local(run_cfg, {'scenario','h_insert_km'}, sys.h_insert/1e3) * 1e3;
-    sys.h_target = get_run_number_field_local(run_cfg, {'scenario','h_target_km'}, sys.h_target/1e3) * 1e3;
-    sys.h_wait = get_run_number_field_local(run_cfg, {'scenario','h_wait_km'}, sys.h_wait/1e3) * 1e3;
     sys.h_reentry = get_run_number_field_local(run_cfg, {'phase3','parking_altitude_km'}, sys.h_reentry/1e3) * 1e3;
     sys.h_entry_interface = get_run_number_field_local(run_cfg, {'phase3','entry_interface_altitude_km'}, sys.h_entry_interface/1e3) * 1e3;
     sys.reentry_flight_path_angle = deg2rad(get_run_number_field_local(run_cfg, {'phase3','flight_path_angle_deg'}, rad2deg(sys.reentry_flight_path_angle)));
@@ -868,9 +863,9 @@ end
 
 function sys = refresh_derived_sys_local(sys)
     r_insert = sys.Re + sys.h_insert;
-    r_wait = sys.Re + sys.h_wait;
-    a_transfer = 0.5 * (r_insert + r_wait);
-    sys.phase = pi * (1 - (a_transfer / r_wait)^1.5);
+    r_target = sys.Re + sys.h_target;
+    a_transfer = 0.5 * (r_insert + r_target);
+    sys.phase = pi * (1 - (a_transfer / r_target)^1.5);
 end
 
 function [phasing_mode, custom_params] = apply_run_config_to_phase1_local(phasing_mode, custom_params, run_cfg)
@@ -1155,13 +1150,6 @@ function vec = get_run_vector_field_local(s, path, default_value)
     end
 end
 
-function angle = get_run_angle_deg_local(s, path, default_value)
-    angle = default_value;
-    if has_nonempty_run_value_local(s, path)
-        angle = deg2rad(get_run_number_field_local(s, path, rad2deg(default_value)));
-    end
-end
-
 %% Local helper functions for JSON mission configuration
 function cfg = load_mission_json_config_local(sys, run_cfg)
     cfg = struct();
@@ -1429,9 +1417,6 @@ function sys = apply_json_to_sys_local(sys, cfg)
         return;
     end
 
-    sys.h_insert = get_json_number_local(cfg, {'scenario','h_chaser_km'}, sys.h_insert/1e3) * 1e3;
-    sys.h_target = get_json_number_local(cfg, {'scenario','h_target_km'}, sys.h_target/1e3) * 1e3;
-    sys.h_wait = get_json_number_local(cfg, {'scenario','h_wait_km'}, sys.h_wait/1e3) * 1e3;
     sys.h_reentry = get_json_number_local(cfg, {'phase3','parking_altitude_km'}, sys.h_reentry/1e3) * 1e3;
     sys.h_reentry = get_json_number_local(cfg, {'reentry','parking_altitude_km'}, sys.h_reentry/1e3) * 1e3;
     sys.h_entry_interface = get_json_number_local(cfg, {'phase3','entry_interface_altitude_km'}, sys.h_entry_interface/1e3) * 1e3;
@@ -1522,8 +1507,8 @@ function sys = apply_environment_env_overrides_local(sys, run_cfg)
 end
 
 function print_environment_config_local(sys)
-    fprintf('Scenario: insertion %.1f km, target %.1f km, wait %.1f km\n', ...
-            sys.h_insert/1000, sys.h_target/1000, sys.h_wait/1000);
+    fprintf('Scenario (Mission_Config.m): insertion %.1f km, target %.1f km\n', ...
+            sys.h_insert/1000, sys.h_target/1000);
     fprintf('Maneuver model: %s, thrust %.1f N, Isp %.1f s\n', ...
             char(string(sys.maneuver.default_burn_model)), sys.maneuver.finite_burn_thrust, sys.maneuver.finite_burn_isp);
     fprintf('Phase 3 geometry: parking %.1f km, entry interface %.1f km, FPA %.2f deg\n', ...
@@ -1642,13 +1627,6 @@ function [r, v] = circular_polar_state_local(radius, u_rad, sys)
     z_over_r = sin(u_rad);
     v_mag = sqrt(sys.mu / radius * (1 - sys.J2 * (sys.Re / radius)^2 * (3*z_over_r^2 - 1)));
     v = v_mag * [-sin(u_rad); 0; cos(u_rad)];
-end
-
-function value = get_json_angle_rad_local(cfg, path, default_value)
-    value = default_value;
-    if has_json_path_local(cfg, path)
-        value = deg2rad(get_json_number_local(cfg, path, rad2deg(default_value)));
-    end
 end
 
 function value = get_json_number_local(cfg, path, default_value)

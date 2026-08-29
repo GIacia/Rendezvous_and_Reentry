@@ -11,19 +11,23 @@ function sys = Mission_Config()
     sys.Chaser_Mass_Init = 2000; % Base chaser wet mass [kg], excluding an add-on capsule by default
     sys.Inertia = diag([800, 800, 600]); % Moment of inertia [kg*m^2]
 
-    % Orbit and mission altitudes.
+    % Orbital scenario authority.
+    % Change the mission geometry here. Mission_Run_Config.m and optimizer
+    % JSON may select methods and maneuver parameters, but do not override
+    % these scenario values.
     sys.h_target = 500e3;      % 500 km
     sys.h_insert = 300e3;      % 300 km
-    sys.h_wait   = 495e3;      % 495 km (Waiting Point)
+    sys.initial_chaser_angle_deg = 0;
+    sys.initial_phase_angle_deg = 90;
     sys.h_reentry = 200e3;     % 200 km
     sys.h_entry_interface = 120e3; % 120 km atmospheric entry interface
     sys.reentry_flight_path_angle = 4 * pi/180; % 120 km interface FPA magnitude [rad]
     sys.inc = pi/2;            % Polar orbit inclination [rad]
 
     r_insert = sys.Re + sys.h_insert;
-    r_wait = sys.Re + sys.h_wait;
-    a_transfer = 0.5 * (r_insert + r_wait);
-    sys.phase = pi * (1 - (a_transfer / r_wait)^1.5); % two-body Hohmann phase angle [rad]
+    r_target = sys.Re + sys.h_target;
+    a_transfer = 0.5 * (r_insert + r_target);
+    sys.phase = pi * (1 - (a_transfer / r_target)^1.5); % two-body Hohmann phase angle [rad]
 
     % Propulsion model.
     sys.Isp = 200;             % Specific impulse [s]

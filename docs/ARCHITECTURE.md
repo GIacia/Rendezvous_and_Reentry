@@ -26,7 +26,9 @@ Provides a single configuration structure `sys` containing:
 - mission altitude targets
 - capture-point settings
 
-This file is the main place to edit scenario assumptions.
+This file is the sole place to edit orbital scenario assumptions: insertion and
+target altitude, plus initial chaser/target phase geometry. `Mission_Run_Config`
+and Python JSON do not override these values.
 
 ### `Phasing_Propagator.m`
 
